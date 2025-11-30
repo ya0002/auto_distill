@@ -1,325 +1,734 @@
 import os
+import operator
 import uuid
 import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Sequence, TypedDict
+from typing import Annotated, Sequence, TypedDict, Dict, Any, List
 
-# Core libs from distilled.py
-import chromadb
-from docling.document_converter import DocumentConverter
-from docling.chunking import HybridChunker
-import arxiv
-import wikipedia
 
 # LangChain / LangGraph
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_experimental.tools import PythonAstREPLTool
-from langchain_core.tools import tool
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
 from langgraph.graph import StateGraph, END
 
 # LLMs
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from tools.custom_tools import (
+    arxiv_search_tool,
+    search_wikipedia_tool,
+    query_vector_db,
+    python_repl_tool
+)
 
-# ---------- Vector Store (Docling + Chroma) ----------
-class DoclingVectorStore:
-    def __init__(self, db_path: str = "./local_vector_db", collection_name: str = "docs"):
-        self.client = chromadb.PersistentClient(path=db_path)
-        self.collection = self.client.get_or_create_collection(name=collection_name)
-        self.grouped_by_header = dict()
-        self.converter = DocumentConverter()
-
-    def ingest_pdf(self, pdf_path: str, max_tokens: int = 500):
-        result = self.converter.convert(pdf_path)
-        return self.ingest_doc(result.document, pdf_path, max_tokens)
-
-    def ingest_arxiv(self, query: str, max_results: int = 1, max_tokens: int = 500):
-        client = arxiv.Client()
-        search = arxiv.Search(query=query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
-        results = list(client.results(search))
-        if not results:
-            return {}
-        paper = results[0]
-        title = f"Arxiv: {paper.title}"
-        try:
-            result = self.converter.convert(paper.pdf_url)
-            return self.ingest_doc(result.document, source_name=title, max_tokens=max_tokens)
-        except Exception:
-            return {}
-
-    def ingest_wikipedia(self, query: str, max_tokens: int = 500, lang: str = "en"):
-        wikipedia.set_lang(lang)
-        try:
-            search_results = wikipedia.search(query, results=1)
-            page = wikipedia.page(search_results[0], auto_suggest=True)
-            result = self.converter.convert(page.url)
-            return self.ingest_doc(result.document, source_name=f"Wiki: {page.title}", max_tokens=max_tokens)
-        except Exception:
-            return {}
-
-    def ingest_doc(self, doc, source_name, max_tokens=500):
-        chunker = HybridChunker(tokenizer="sentence-transformers/all-MiniLM-L6-v2", max_tokens=max_tokens)
-        chunks = list(chunker.chunk(doc))
-
-        ids, documents, metadatas = [], [], []
-        grouped_by_header = self.grouped_by_header
-
-        for chunk in chunks:
-            ids.append(str(uuid.uuid4()))
-            documents.append(chunk.text)
-            page_no = 0
-            if chunk.meta.doc_items and chunk.meta.doc_items[0].prov:
-                page_no = chunk.meta.doc_items[0].prov[0].page_no
-            meta = {
-                "filename": source_name,
-                "headers": " > ".join(chunk.meta.headings) if chunk.meta.headings else "Root",
-                "page_number": page_no,
-            }
-            metadatas.append(meta)
-            grouped_by_header.setdefault(meta["headers"], []).append({"id": ids[-1], "content": documents[-1], "page": page_no})
-
-        self.collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
-        self.grouped_by_header = grouped_by_header
-        return grouped_by_header
-
-    def query_n_merge(self, query_text: str, n_results: int = 3) -> List[Dict[str, Any]]:
-        results = self.collection.query(query_texts=[query_text], n_results=n_results)
-        structured = []
-        if results.get("ids"):
-            for i in range(len(results["ids"][0])):
-                structured.append({
-                    "id": results["ids"][0][i],
-                    "text": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
-                    "distance": results.get("distances", [[None]])[0][i],
-                })
-        structured.sort(key=lambda x: (x["metadata"].get("filename", ""), x["metadata"].get("page_number", 0)))
-        merged = []
-        from itertools import groupby
-        key_func = lambda x: (x["metadata"].get("filename"), x["metadata"].get("page_number"))
-        for (filename, page_num), group in groupby(structured, key=key_func):
-            group_list = list(group)
-            merged.append({
-                "id": group_list[0]["id"],
-                "text": "\n\n".join([g["text"] for g in group_list]),
-                "metadata": group_list[0]["metadata"],
-                "distance": min((g["distance"] for g in group_list if g["distance"] is not None), default=None),
-            })
-        return merged
+from utils import save_blog, DoclingVectorStore
 
 
-# ---------- LLM Setup ----------
-def _get_llm():
-    api_key = os.getenv("GEMINI_KEY")
-    if not api_key:
-        # Return a dummy LLM-like object with simple content to avoid runtime failure
-        class Dummy:
-            def invoke(self, prompt):
-                class R:
-                    content = (
-                        "<p>LLM unavailable. Set GEMINI_KEY to enable generation.</p>"
-                    )
-                return R()
-        return Dummy()
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, google_api_key=api_key)
+GEMINI_API = os.getenv("GEMINI_KEY")
+flash_model_name = ["gemini-2.0-flash", "gemini-2.5-flash"]
+llm_flash = ChatGoogleGenerativeAI(
+    model=flash_model_name[1], temperature=0.2, google_api_key=GEMINI_API
+)
 
+# llm_flash = ChatAnthropic(model="claude-haiku-4-5",
+#                           temperature=0,
+#                           api_key = ANTHROPIC_API_KEY
+#                           )
 
-python_repl_tool = PythonAstREPLTool()
+creative_model_name = ["gemini-2.0-flash", "gemini-2.5-flash"]
+llm_creative = ChatGoogleGenerativeAI(
+    model=creative_model_name[1], temperature=0.7, google_api_key=GEMINI_API
+)
 
-# MCP client (in-process). For external MCP servers, swap this client.
-from .mcp_server import MCPClient, SERVER as MCP_SERVER
-MCP = MCPClient(MCP_SERVER)
-
-
-@tool
-def query_vector_db(query: str, db_path: str) -> str:
-    """Query the Chroma vector database at `db_path` for semantic matches to `query`.
-
-    Returns a markdown-formatted string combining retrieved chunk texts grouped by headers.
-    If no matches are found, returns a fallback notice.
-    """
-    vector_db = DoclingVectorStore(db_path=db_path)
-    results = vector_db.query_n_merge(query, n_results=10)
-    val = []
-    for res in results:
-        val.append(f"## {res['metadata']['headers']}\n{res['text']}\n---")
-    return f"# Context\n" + "\n".join(val) if val else "No specific definition found in VectorDB."
+# --- NODES (AGENTS) ---
 
 
 class ChapterPlan(TypedDict):
+    """Defines the blueprint for a single section of the blog."""
+
     chapter_id: int
     title: str
-    goal: str
-    data_requirements: str
-    visual_requirements: str
+    goal: str  # What is the storytelling goal of this section?
+    data_requirements: str  # What data needs to be mined?
+    visual_requirements: str  # Description of the interactive needed (if any)
 
 
 class AgentState(TypedDict):
+    """The shared memory of the system."""
+
+    # Global Inputs
     raw_sections: Dict[str, Any]
-    user_query: Optional[str]
+    user_query: Optional[
+        str
+    ]  ## something specifies by the user, would be passed to planner
     db_path: str
+
+    # The Master Plan
     story_title: str
     story_arc: List[ChapterPlan]
+
+    # Loop State (Processing one chapter at a time)
     current_chapter_index: int
-    current_chapter_data: Dict[str, Any]
-    current_chapter_vis: str
-    finished_chapters: List[str]
-    messages: Sequence[BaseMessage]
-    critic_feedback: Optional[str]
-    coder_attempts: int
-    error: Optional[str]
+    current_chapter_data: Dict[str, Any]  # Data mined for specific chapter
+    current_chapter_vis: str  # HTML/JS for specific chapter
+
+    # Outputs
+    finished_chapters: List[str]  # List of HTML strings (the body text)
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+
+    # CRITIC STATE
+    critic_feedback: Optional[str]  # Feedback from the critic
+    coder_attempts: int  # Count retries to prevent infinite loops
+
+    # Error Handling
+    error: Optional[str]  # If set, stops execution flow
 
 
 def know_it_all_node(state: AgentState):
+    """
+    The Research Architect.
+
+    Workflow:
+    1. SEARCH: Uses Arxiv/Wiki SEARCH tools to find the exact paper titles/definitions.
+    2. PLAN: Outputs a JSON identifying the best targets.
+    3. INGEST: Triggers the VectorDB ingestion using the precise targets.
+    """
+
+    # 1. Check if data exists (Short-circuit)
+    raw_sections = state.get("raw_sections", {})
+    if raw_sections and len(raw_sections) > 0:
+        print("---KNOW-IT-ALL: DATA DETECTED. SKIPPING.---")
+        return {}
+
     user_query = state.get("user_query")
     if not user_query:
-        return {"error": "No user query provided."}
-    llm = _get_llm()
-    # Use MCP tools for discovery and ingestion
-    # 1) Try wikipedia and arxiv searches (discovery)
-    _ = MCP.invoke("search_wikipedia", {"query": user_query})
-    _ = MCP.invoke("search_arxiv", {"query": user_query})
-    # 2) Build DB path and ingest via MCP
-    db_path = state.get("db_path")
-    if not db_path:
-        db_path = os.path.join("outputs", f"my_rag_data_{uuid.uuid4()}")
-    # no direct download here; rely on wikipedia/arxiv ingestion via DoclingVectorStore where applicable
-    # For now, populate raw sections by running vector store wiki/arxiv helpers to seed content
-    store = DoclingVectorStore(db_path=db_path)
-    wiki = store.ingest_wikipedia(user_query)
-    arx = store.ingest_arxiv(user_query)
-    raw = {}
-    raw.update(wiki or {})
-    raw.update(arx or {})
-    if not raw:
-        return {"error": "Ingestion failed for provided query."}
-    return {"raw_sections": raw, "db_path": db_path}
+        return {"error": "No raw sections and no user query."}
+
+    print(f"---KNOW-IT-ALL: RESEARCHING '{user_query}'---")
+
+    # --- PHASE 1: THE DISCOVERY AGENT ---
+    # This agent uses tools to READ, not to ingest.
+
+    search_tools = [arxiv_search_tool, search_wikipedia_tool]
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are a Senior Data Curator.
+        
+        GOAL: The user wants to write a blog about: "{user_query}".
+        You need to find the specific documents we should add to our library.
+        
+        PROCESS:
+        1. **Explore**: Use `arxiv_search_tool` and `search_wikipedia_tool` to find relevant material.
+           - Example: If user asks for "Mamba", search Arxiv to find the full paper title "Mamba: Linear-Time Sequence Modeling...".
+           - Example: If user asks for "CRISPR", search Wiki to verify the best page title.
+        2. **Select**: Choose ONE foundational paper and ONE comprehensive wiki page.
+        3. **Finalize**: Output a JSON object with the exact search terms to be used for ingestion.
+        
+        OUTPUT FORMAT (JSON ONLY):
+        {{
+            "reasoning": "I found paper X which covers the math, and Wiki page Y for history.",
+            "arxiv_target": "The Exact Paper Title Found in Search",
+            "wiki_target": "The Exact Wiki Page Title"
+        }}
+        
+        If no Arxiv paper is relevant (e.g., for purely historical topics), set "arxiv_target" to "None".
+        """,
+            ),
+            ("user", "{user_query}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ]
+    )
+
+    agent = create_tool_calling_agent(llm_flash, search_tools, prompt)
+    executor = AgentExecutor(agent=agent, tools=search_tools, verbose=True)
+
+    # Run the research loop
+    try:
+        response = executor.invoke({"user_query": user_query})
+        raw_output = response["output"]
+        content = ""
+
+        # Check if output is a list (Gemini/Vertex often returns a list of blocks)
+        if isinstance(raw_output, list):
+            for block in raw_output:
+                # Handle dictionary blocks (e.g. {'type': 'text', 'text': '...'})
+                if isinstance(block, dict) and "text" in block:
+                    content += block["text"]
+                # Handle direct strings in list
+                elif isinstance(block, str):
+                    content += block
+        else:
+            # Standard string output
+            content = str(raw_output)
+
+        # Parse the JSON from the text response
+        # (Handling potential markdown wrapping)
+        clean_json = content.replace("```json", "").replace("```", "").strip()
+        plan = json.loads(clean_json)
+
+        print(f"--- RESEARCH COMPLETE ---")
+        print(f" > Plan: {plan.get('reasoning')}")
+        print(f" > Target Arxiv: {plan.get('arxiv_target')}")
+        print(f" > Target Wiki:  {plan.get('wiki_target')}")
+
+    except Exception as e:
+        print(f"Research Agent failed: {e}")
+        return {"error": f"Failed to plan research: {str(e)}"}
+
+    # --- PHASE 2: THE INGESTION ENGINE ---
+    # Now we strictly follow the plan using the internal DB methods
+
+    vector_db = DoclingVectorStore(db_path=state.get("db_path"))
+
+    # 1. Ingest Arxiv (if planned)
+    target_paper = plan.get("arxiv_target")
+    if target_paper and target_paper != "None":
+        print(f" > Ingesting Arxiv: '{target_paper}'...")
+        # Note: We use max_results=1 because the agent should have given us a specific title
+        all_grouped_by_header = vector_db.ingest_arxiv(
+            query=target_paper, max_results=1
+        )
+
+    # 2. Ingest Wikipedia (if planned)
+    target_wiki = plan.get("wiki_target")
+    if target_wiki and target_wiki != "None":
+        print(f" > Ingesting Wiki: '{target_wiki}'...")
+        all_grouped_by_header = vector_db.ingest_wikipedia(query=target_wiki)
+
+    if not all_grouped_by_header:
+        return {
+            "error": f"Ingestion failed. Plan was generated ({target_paper}), but no data was loaded."
+        }
+
+    print(f"---KNOW-IT-ALL: FINISHED. {len(all_grouped_by_header)} SECTIONS LOADED---")
+
+    # Return the data to populate the state
+    return {"raw_sections": all_grouped_by_header}
 
 
 def planner_node(state: AgentState):
-    llm = _get_llm()
-    raw_headers = f"ALL HEADINGS: {list(state['raw_sections'].keys())}"
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are the Editor-in-Chief of Distill.pub. Create a JSON plan with blog_title and 5-8 chapters."""),
-        ("user", "{raw_headers}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-    agent = create_tool_calling_agent(llm, [query_vector_db], prompt)
-    executor = AgentExecutor(agent=agent, tools=[query_vector_db], verbose=False)
-    result = executor.invoke({"raw_headers": raw_headers, "db_path": state["db_path"], "user_query": state.get("user_query", "")})
-    content = str(result.get("output", "")).replace("```json", "").replace("```", "")
+    """
+    The Editor-in-Chief.
+    Reads the raw data and creates a 'Story Arc' (Table of Contents).
+    """
+
+    if state.get("error"):
+        print(f"\n!!! SYSTEM HALT DUE TO ERROR: {state['error']} !!!")
+        return "finish"
+
+    print("---PLANNER: CREATING STORY ARC---")
+
+    # Flatten inputs for analysis
+    raw_headers = f"ALL HEADINGS: {list(state["raw_sections"].keys())}"
+
+    raw_sections_headings_with_stringed = {
+        k: str(v) for k, v in state["raw_sections"].items()
+    }
+    raw_sections_headings_with_context = {
+        k: v[: len(v) // 10] for k, v in raw_sections_headings_with_stringed.items()
+    }
+    raw_preview_str = str(raw_sections_headings_with_context)
+    raw_preview = raw_preview_str  # f"{raw_preview_str[:5000]} ... {raw_preview_str[5000:]}" # Truncate to avoid context limit if huge
+
+    user_query = state["user_query"]
+
+    if user_query:
+        user_query = f"Focus on: '{user_query}'"
+        print(user_query)
+    else:
+        user_query = ""
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are the Editor-in-Chief of Distill.pub.
+
+        YOUR GOAL:
+        Analyze the provided raw data dictionary and create a "Story Arc" for a blog post.
+        The blog must explain the concepts clearly, using storytelling techniques.
+        {user_query}
+
+        db_path: {db_path}
+
+        INPUT STRUCTURE:
+        The input is a dictionary containing text sections, tables, and abstract data.
+
+
+        YOUR OUTPUT:
+        Generate a JSON list of "Chapters". Each chapter must have:
+        1. 'title': Catchy title.
+        2. 'goal': The narrative goal.
+        3. 'data_requirements': Specific keys or topics to look for in the raw data. If none, put "None".
+        4. 'visual_requirements': A descriptions of an interactive visualization to build. If none, put "None".
+
+        CRITICAL:
+        - The story must flow: Intro -> Core Concept -> Deep Dive/Data -> Conclusion.
+        - Plan for at least 5-15 chapters.
+        - Ensure at least one chapter focuses heavily on the DATA.
+        - **VISUALS:** We want a highly visual blog. Plan for numerous visuals in *EVERY* chapter. If no data exists for a chapter, request a "Conceptual Diagram" .
+
+        Output format: JSON ONLY.
+        {{
+            "blog_title": "The Overall Title",
+            "chapters": [
+                {{ "chapter_id": 1, "title": "...", "goal": "...", "data_requirements": "...", "visual_requirements": "..." }},
+                ...
+            ]
+        }}
+        """,
+            ),
+            (
+                "user",
+                "ALL Heading keys: {raw_headers}\nRaw Data Preview: {raw_preview}",
+            ),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ]
+    )
+
+    agent = create_tool_calling_agent(llm_flash, [query_vector_db], prompt)
+    executor = AgentExecutor(agent=agent, tools=[query_vector_db], verbose=True)
+
+    # chain = prompt | llm_flash
+    result = executor.invoke(
+        {
+            "user_query": user_query,
+            "raw_headers": raw_headers,
+            "raw_preview": raw_preview,
+            "db_path": state["db_path"],
+        }
+    )
+
+    # Parsing logic to handle potential markdown wrapping
+
+    raw_output = result["output"]
+    content = ""
+
+    # Check if output is a list (Gemini/Vertex often returns a list of blocks)
+    if isinstance(raw_output, list):
+        for block in raw_output:
+            # Handle dictionary blocks (e.g. {'type': 'text', 'text': '...'})
+            if isinstance(block, dict) and "text" in block:
+                content += block["text"]
+            # Handle direct strings in list
+            elif isinstance(block, str):
+                content += block
+    else:
+        # Standard string output
+        content = str(raw_output)
+
+    content = content.replace("```json", "").replace("```", "")
+
     try:
         plan = json.loads(content)
-    except Exception:
-        plan = {"blog_title": state.get("user_query", "Distill Blog"), "chapters": [
-            {"chapter_id": i+1, "title": f"Section {i+1}", "goal": "Explain key idea", "data_requirements": "None", "visual_requirements": "None"}
-            for i in range(6)
-        ]}
-    return {
-        "story_title": plan.get("blog_title", "Distill Blog"),
-        "story_arc": plan.get("chapters", []),
-        "current_chapter_index": 0,
-        "finished_chapters": [],
-        "coder_attempts": 0,
-        "critic_feedback": None,
-    }
+        print(f"\n\n----\nPLAN :\n{plan}\n-----\n\n")
+        return {
+            "story_title": plan.get("blog_title", "Distill Blog"),
+            "story_arc": plan.get("chapters", []),
+            "current_chapter_index": 0,
+            "finished_chapters": [],
+            "coder_attempts": 0,  # Reset attempts
+            "critic_feedback": None,
+        }
+    except Exception as e:
+        print(f"Error in Planner: {e}")
+        return {
+            "error": f"Planner failed to generate arc: {str(e)}",
+            "story_arc": [],
+            "current_chapter_index": 0,
+            "finished_chapters": [],
+            "coder_attempts": 0,
+        }
 
 
 def miner_node(state: AgentState):
-    idx = state["current_chapter_index"]
-    chapter = state["story_arc"][idx]
-    # Call MCP tool for vector query
-    resp = MCP.invoke("query_vector_db", {"query": f"{chapter['title']}: {chapter['goal']}", "db_path": state["db_path"]})
-    return {"current_chapter_data": {"extracted": json.dumps(resp.get("results", []))}}
+    """
+    The Researcher.
+    Extracts data ONLY for the current chapter's requirements.
+    """
+
+    if state.get("error"):
+        return {}
+
+    try:
+        current_idx = state["current_chapter_index"]
+        chapter = state["story_arc"][current_idx]
+
+        print(f"---MINER: PROCESSING CHAPTER {current_idx + 1}: {chapter['title']}---")
+
+        if chapter["data_requirements"] == "None":
+            return {"current_chapter_data": {}}
+
+        # Contextual flattening
+        data_context = (
+            query_vector_db.invoke(
+                {
+                    "query": f"{chapter['title']}: {chapter['goal']}",
+                    "db_path": state["db_path"],
+                }
+            )
+            .replace("{", "{{")
+            .replace("}", "}}")
+        )
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """You are a Data Researcher.
+
+          CHAPTER : {chapter}
+          CURRENT CHAPTER GOAL: {goal}
+          DATA REQUIREMENTS: {requirements}
+
+          Your task is to scan the content and extract the specific data needed for this chapter.
+          If the requirement asks for experimental results or tables, use the Python Tool to parse them via Regex.
+
+          Output the extracted data as a clean string or JSON structure.
+          """,
+                ),
+                ("user", data_context),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ]
+        )
+
+        agent = create_tool_calling_agent(llm_flash, [python_repl_tool], prompt)
+        executor = AgentExecutor(agent=agent, tools=[python_repl_tool], verbose=True)
+
+        result = executor.invoke(
+            {
+                "chapter": chapter["title"],
+                "goal": chapter["goal"],
+                "requirements": chapter["data_requirements"],
+            }
+        )
+
+        return {"current_chapter_data": {"extracted": result["output"]}}
+
+    except Exception as e:
+        print(f"Error in Miner: {e}")
+        return {"error": f"Miner failed to extract data: {str(e)}"}
 
 
 def coder_node(state: AgentState):
-    llm = _get_llm()
-    idx = state["current_chapter_index"]
-    chapter = state["story_arc"][idx]
-    if chapter.get("visual_requirements", "None") == "None":
-        return {"current_chapter_vis": ""}
-    resp = llm.invoke("Create a small D3.js interactive in a div with id 'vis_chapter_%d'" % idx)
-    code = resp.content.replace("```html", "").replace("```", "")
-    return {"current_chapter_vis": code}
+    """
+    The Visualization Engineer.
+    Builds D3.js ONLY if the chapter plan asks for it.
+    """
+
+    if state.get("error"):
+        return {}
+
+    try:
+        current_idx = state["current_chapter_index"]
+        chapter = state["story_arc"][current_idx]
+        attempts = state.get("coder_attempts", 0)
+        feedback = state.get("critic_feedback", None)
+
+        print(
+            f"---CODER: VISUALIZING CHAPTER {current_idx + 1}  (Attempt {attempts + 1})---"
+        )
+
+        if (
+            chapter["visual_requirements"] == "None"
+            or "None" in chapter["visual_requirements"]
+        ):
+            return {
+                "current_chapter_vis": "",
+                "coder_attempts": 0,
+                "critic_feedback": None,
+            }
+
+        extracted_data = state["current_chapter_data"].get("extracted", "No data")
+
+        # Dynamic prompting based on whether this is a retry
+        instruction_prefix = ""
+        if feedback:
+            instruction_prefix = f"""
+          !!! CRITICAL FIX REQUIRED !!!
+          Your previous code was REJECTED by the Quality Assurance Critic.
+
+          CRITIC FEEDBACK:
+          "{feedback}"
+
+          You must fix these specific errors in your new code.
+          """
+
+        prompt = f"""
+      {instruction_prefix}
+      You are a Distill.pub Frontend Engineer.
+
+      CHAPTER GOAL: {chapter['goal']}
+      VISUALIZATION IDEA: {chapter['visual_requirements']}
+      DATA AVAILABLE: {extracted_data}
+
+      Task: Write a visualization to represent this concept/data.
+
+      DECISION LOGIC:
+      - If the concept involves charts, flows, or 2D data: Use **D3.js (v7)**.
+      - If the concept involves 3D geometry, stacked layers, or embeddings: Use **Three.js**.
+
+      REQUIREMENTS:
+      1. It must be interactive (tooltips, hover states, or mouse rotation).
+      2. It must be self-contained in a <div id='vis_chapter_{current_idx}' style='width:100%; height:400px; position:relative;'>.
+      3. Output ONLY the raw HTML/JS.
+
+      IMPORTANT FOR THREE.JS:
+      - Append the renderer to the div '#vis_chapter_{current_idx}'.
+      - Handle window resize if possible.
+      - Start the animation loop immediately.
+      """
+
+        response = llm_flash.invoke(prompt)
+        clean_code = response.content.replace("```html", "").replace("```", "")
+
+        return {"current_chapter_vis": clean_code, "coder_attempts": attempts + 1}
+
+    except Exception as e:
+        print(f"Error in Coder: {e}")
+        return {"error": f"Coder failed to generate visualization: {str(e)}"}
 
 
 def critic_node(state: AgentState):
-    return {"critic_feedback": None}
+    """
+    The Critic (QA).
+    Simulates execution and checks for syntax/logic errors.
+    """
+    if state.get("error"):
+        return {}
+
+    vis_code = state.get("current_chapter_vis", "")
+    current_idx = state["current_chapter_index"]
+
+    # If no code was generated (not required), auto-approve
+    if not vis_code or len(vis_code) < 10:
+        return {"critic_feedback": None}
+
+    print(f"---CRITIC: REVIEWING CODE FOR CHAPTER {current_idx + 1}---")
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are a Senior QA Engineer and Code Critic.
+        Your job is to statically analyze HTML/JavaScript (D3.js/Three.js) code.
+
+        You must "mentally execute" the code and look for:
+        1. **Selector Errors**: Does it select the correct ID? (Expected: #vis_chapter_{current_idx})
+        2. **Syntax Errors**: Unclosed brackets, missing semicolons, invalid D3 chaining.
+        3. **Logic Errors**: Trying to access undefined variables.
+        4. **Emptiness**: Does the code actually draw nothing?
+
+        Response Format: JSON ONLY
+        {{
+            "status": "APPROVE" or "REJECT",
+            "feedback": "Short explanation of what is wrong (if REJECT). Otherwise empty string."
+        }}
+        """,
+            ),
+            (
+                "user",
+                "Target ID: #vis_chapter_{current_idx}\n\nCODE TO REVIEW:\n{vis_code}",
+            ),
+        ]
+    )
+
+    chain = prompt | llm_flash
+    result = chain.invoke({"current_idx": current_idx, "vis_code": vis_code})
+
+    try:
+        content = result.content.replace("```json", "").replace("```", "")
+        review = json.loads(content)
+
+        if review["status"] == "APPROVE":
+            print("   ✅ Critic Approved")
+            return {"critic_feedback": None}  # None implies success
+        else:
+            print(f"   ❌ Critic Rejected: {review['feedback']}")
+            return {"critic_feedback": review["feedback"]}
+
+    except Exception as e:
+        print(f"Critic parsing error: {e}")
+        # If critic fails to parse, we usually let it pass to avoid blocking,
+        # or force a retry. Here we let it pass.
+        return {"critic_feedback": None}
 
 
 def writer_node(state: AgentState):
-    idx = state["current_chapter_index"]
-    chapter = state["story_arc"][idx]
-    data = state["current_chapter_data"].get("extracted", "")
-    vis = state.get("current_chapter_vis", "")
-    html = f"<section id='chapter-{idx}'><h2>{chapter['title']}</h2><p>{chapter['goal']}</p><div class='vis-wrapper'>{vis}</div><pre>{data}</pre></section>"
-    finished = state.get("finished_chapters", [])
-    finished.append(html)
-    return {"finished_chapters": finished, "current_chapter_index": idx + 1, "coder_attempts": 0, "critic_feedback": None}
+    """
+    The Storyteller.
+    Writes the specific chapter, weaving in the data and visual.
+    """
+    if state.get("error"):
+        return {}
+
+    try:
+        current_idx = state["current_chapter_index"]
+        chapter = state["story_arc"][current_idx]
+
+        print(f"---WRITER: DRAFTING CHAPTER {current_idx + 1}---")
+
+        data = state["current_chapter_data"].get("extracted", "")
+        vis = state["current_chapter_vis"]
+
+        # Determine if visual exists to instruct the writer properly
+        visual_instruction = "NO visual available for this chapter."
+        if vis and len(vis) > 50:
+            visual_instruction = "An interactive visualization IS available. You MUST insert the placeholder `{{INSERT_VISUAL_HERE}}` in the text where it fits best."
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """You are a Science Writer.
+
+          Write the content for ONE chapter of a blog post.
+
+          Title: {title}
+          Goal: {goal}
+
+          Instructions:
+          1. Write in clear, engaging HTML (<p>, <h3>, <ul>).
+          2. Explain the concepts simply (Feynman style).
+          3. If there is data, reference it specifically.
+          4. If there is a visualization code provided, INSERT the placeholder `{{INSERT_VISUAL_HERE}}` exactly where it should appear in the flow.
+          5. Do not write the whole blog, JUST this chapter.
+          6. Use simple language and talk like you are telling a story.
+          7. VISUAL STATUS: {visual_instruction}.
+          8. Use LaTeX formatting for math (e.g., $d_model$, $N=6$)
+          9. **CRITICAL FORMATTING RULE:** Do NOT use Markdown for bolding or italics (like **text** or *text*). Browsers will not render this. YOU MUST USE HTML TAGS: <b>bold</b>, <i>italics</i>, <strong>strong</strong>.
+
+          """,
+                ),
+                ("user", "Data Context: {data}"),
+            ]
+        )
+
+        chain = prompt | llm_creative
+        result = chain.invoke(
+            {
+                "title": chapter["title"],
+                "goal": chapter["goal"],
+                "data": str(data),
+                "visual_instruction": visual_instruction,
+            }
+        )
+
+        # Inject the visual code immediately
+        chapter_content = result.content
+        if vis and len(vis) > 50:
+            if "{{INSERT_VISUAL_HERE}}" in chapter_content:
+                chapter_content = chapter_content.replace(
+                    "{{INSERT_VISUAL_HERE}}", f"<div class='vis-wrapper'>{vis}</div>"
+                )
+            else:
+                chapter_content += f"\n<div class='vis-wrapper'>{vis}</div>"
+
+        # Wrap in a section tag
+        full_chapter_html = f"<section id='chapter-{current_idx}'><h2>{chapter['title']}</h2>{chapter_content}</section>"
+
+        # Append to finished chapters
+        current_finished = state.get("finished_chapters", [])
+        current_finished.append(full_chapter_html)
+
+        return {
+            "finished_chapters": current_finished,
+            "current_chapter_index": current_idx + 1,  # Increment for next loop
+            # Reset critic/coder state for the NEXT chapter
+            "coder_attempts": 0,
+            "critic_feedback": None,
+        }
+
+    except Exception as e:
+        print(f"Error in Writer: {e}")
+        return {"error": f"Writer failed to write chapter: {str(e)}"}
 
 
 def router_node(state: AgentState):
+    """
+    The Traffic Controller.
+    Checks if we have processed all chapters in the arc.
+    """
+    # IMMEDIATE STOP if error is present
     if state.get("error"):
+        print(f"\n!!! SYSTEM HALT DUE TO ERROR: {state['error']} !!!")
         return "finish"
-    return "continue" if state["current_chapter_index"] < len(state["story_arc"]) else "finish"
+
+    current_idx = state["current_chapter_index"]
+    total_chapters = len(state["story_arc"])
+
+    if current_idx < total_chapters:
+        return "continue"
+    else:
+        return "finish"
 
 
+def critic_router(state: AgentState):
+    """
+    Decides if we retry coding or move to writing.
+    """
+    feedback = state.get("critic_feedback")
+    attempts = state.get("coder_attempts", 0)
+
+    # If no feedback, it was approved
+    if not feedback:
+        return "approve"
+
+    # If too many attempts, force move on (to prevent infinite loops)
+    if attempts >= 3:
+        print("---CRITIC: TOO MANY RETRIES, SKIPPING VISUAL---")
+        # We wipe the visual so the writer doesn't include broken code
+        state["current_chapter_vis"] = ""
+        return "approve"  # Move to writer, but without the visual
+
+    return "reject"  # Go back to coder
+
+
+# --- GRAPH CONSTRUCTION ---
 def build_workflow():
+
     workflow = StateGraph(AgentState)
+
     workflow.add_node("know_it_all", know_it_all_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("miner", miner_node)
     workflow.add_node("coder", coder_node)
-    workflow.add_node("critic", critic_node)
+    workflow.add_node("critic", critic_node)  # NEW NODE
     workflow.add_node("writer", writer_node)
+
+    # Entry
     workflow.set_entry_point("know_it_all")
+
+    # Logic
     workflow.add_edge("know_it_all", "planner")
-    workflow.add_edge("planner", "miner")
+    workflow.add_edge("planner", "miner")  # Start the loop
     workflow.add_edge("miner", "coder")
-    workflow.add_edge("coder", "critic")
-    workflow.add_conditional_edges("critic", lambda s: "approve", {"approve": "writer"})
-    workflow.add_conditional_edges("writer", router_node, {"continue": "miner", "finish": END})
+    workflow.add_edge("coder", "critic")  # Coder sends to Critic
+
+    # Conditional Edge for Critic
+    workflow.add_conditional_edges(
+        "critic", critic_router, {"approve": "writer", "reject": "coder"}
+    )
+
+    # Conditional Loop
+    workflow.add_conditional_edges(
+        "writer",
+        router_node,
+        {"continue": "miner", "finish": END},  # Loop back for next chapter  # Done
+    )
+
     return workflow.compile()
 
 
-def save_blog(title: str, chapters_html: List[str], out_dir: str) -> str:
-    os.makedirs(out_dir, exist_ok=True)
-    full_body = "\n".join(chapters_html)
-    filename = f"{title.replace(' ', '_').replace(':', '').lower()}_distill.html"
-    path = os.path.join(out_dir, filename)
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{title}</title>
-        <script src="https://d3js.org/d3.v7.min.js"></script>
-        <script>
-        window.MathJax = {{ tex: {{ inlineMath: [['$', '$'], ['\\(', '\\)']] }} }};
-        </script>
-        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-        <style>body{{font-family:serif;max-width:840px;margin:0 auto;padding:32px}}.vis-wrapper{{margin:24px 0;padding:16px;border:1px solid #eee;border-radius:8px}}</style>
-    </head>
-    <body>
-        <h1>{title}</h1>
-        <div class="metadata">Generated {datetime.now().strftime('%Y-%m-%d')}</div>
-        {full_body}
-    </body>
-    </html>
-    """
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(html)
-    return path
-
-
-def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None) -> str:
+def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None, raw_sections: Dict[str, Any] = None) -> str:
     db_path = db_path or os.path.join(outputs_dir, f"my_rag_data_{uuid.uuid4()}")
     initial_state: AgentState = {
-        "raw_sections": {},
+        "raw_sections": raw_sections,
         "user_query": user_query,
         "story_title": "",
         "story_arc": [],
@@ -343,7 +752,8 @@ def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None) 
 def run_agent_with_pdf(pdf_path: str, outputs_dir: str) -> str:
     db_path = os.path.join(outputs_dir, f"my_rag_data_{uuid.uuid4()}")
     # Ingest via MCP server tool
-    MCP.invoke("ingest_pdf", {"pdf_path": pdf_path, "db_path": db_path})
+    store = DoclingVectorStore(db_path=db_path)
+    grouped = store.ingest_pdf(pdf_path)
+
     # Use filename stem as query topic
-    topic = os.path.splitext(os.path.basename(pdf_path))[0]
-    return run_agent(topic, outputs_dir, db_path=db_path)
+    return run_agent("", outputs_dir, db_path=db_path, raw_sections=grouped)

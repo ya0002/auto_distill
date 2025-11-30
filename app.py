@@ -1,4 +1,5 @@
 import os
+import shutil
 import glob
 import gradio as gr
 from src.agent_pipeline import run_agent, run_agent_with_pdf
@@ -47,7 +48,6 @@ def handle_upload_pdf(pdf_file_path):
     # pdf_file_path is a path string when using type="filepath"
     filename = os.path.basename(pdf_file_path)
     saved_path = os.path.join(DATA_DIR, filename)
-    import shutil
     shutil.copyfile(pdf_file_path, saved_path)
     out_path = run_agent_with_pdf(saved_path, OUTPUTS_DIR)
     newest = os.path.basename(out_path)
