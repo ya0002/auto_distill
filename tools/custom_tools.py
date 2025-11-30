@@ -1,32 +1,34 @@
-from docling.document_converter import DocumentConverter
-from docling.chunking import HybridChunker
+import os
+import sys
 
-import chromadb
+# Ensure project root is on sys.path so `utils` can be imported even when running from `tools/`
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+import glob
+import subprocess
 import uuid
-from typing import List, Dict, Any
-
-
+import chromadb
 import wikipedia
 import arxiv
-
 import pandas as pd
-
-from typing import List, Dict, Any
-from itertools import groupby
-
-import wikipedia
-
-
-import arxiv
-
 import json
+from itertools import groupby
+from typing import List, Dict, Any, Optional
+
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 
 from langchain_core.tools import tool
 from langchain_experimental.tools import PythonAstREPLTool
 
+from docling.document_converter import DocumentConverter
+from docling_core.transforms.chunker import HybridChunker
+
 from utils import DoclingVectorStore
-
-
 
 
 # --- TOOLS ---
@@ -187,4 +189,195 @@ def arxiv_search_tool(query: str) -> str:
     return search_arxiv_papers(query)
 
 
+class LibraryDocsDB:
+    def __init__(
+        self,
+        db_path="./chroma_db_native",
+        source_root="./my_docs_source",
+        auto_ingest=True,
+    ):
+        self.source_root = source_root
+        self.db_path = db_path
 
+        # 1. Initialize Native ChromaDB Client
+        self.client = chromadb.PersistentClient(path=self.db_path)
+
+        # Get or create the collection
+        # We use cosine distance for semantic similarity
+        self.collection = self.client.get_or_create_collection(
+            name="library_docs", metadata={"hnsw:space": "cosine"}
+        )
+
+        # 2. Initialize Embedding Model (MiniLM is fast and good for code/docs)
+        self.model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        print(f"Loading embedding model: {self.model_name}...")
+        self.embedder = SentenceTransformer(self.model_name)
+
+        # populate db with docs if not available
+        if (
+            auto_ingest
+            and len(
+                self.query("Explain scaleLinear", library_filter="d3")["documents"][0]
+            )
+            == 0
+        ):
+            print("Ingesting library documentation...")
+            self.ingest()
+
+    def _ensure_repos(self):
+        """Clones D3 and ThreeJS repositories if they don't exist."""
+        repos = {
+            "threejs": ("https://github.com/mrdoob/three.js.git", "docs"),
+            "d3": ("https://github.com/d3/d3.git", "."),
+        }
+
+        if not os.path.exists(self.source_root):
+            os.makedirs(self.source_root)
+
+        for lib_name, (url, _) in repos.items():
+            lib_path = os.path.join(self.source_root, lib_name)
+            if not os.path.exists(lib_path):
+                print(f"[{lib_name}] Cloning repo...")
+                subprocess.run(
+                    ["git", "clone", "--depth", "1", url, lib_path], check=True
+                )
+            else:
+                print(f"[{lib_name}] Repo exists.")
+
+    def _get_files(self) -> List[tuple]:
+        """Finds all HTML/MD files and tags them with their library name."""
+        files = []
+        # We only care about these extensions
+        extensions = ["**/*.html", "**/*.md"]
+
+        for lib_name in ["threejs", "d3"]:
+            lib_path = os.path.join(self.source_root, lib_name)
+            if not os.path.isdir(lib_path):
+                continue
+
+            for ext in extensions:
+                # Recursive search
+                found = glob.glob(os.path.join(lib_path, ext), recursive=True)
+                for f in found:
+                    files.append((f, lib_name))
+        return files
+
+    def ingest(self):
+        """Parses files with Docling, chunks them, embeds them, and saves to Chroma."""
+        self._ensure_repos()
+
+        # Docling Setup
+        converter = DocumentConverter()
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        chunker = HybridChunker(tokenizer=tokenizer, max_tokens=512, merge_peers=True)
+
+        files = self._get_files()
+        print(f"Found {len(files)} files to ingest.")
+
+        for i, (file_path, lib_name) in enumerate(files):
+            try:
+                # A. Parse (Docling)
+                conv_result = converter.convert(file_path)
+                doc = conv_result.document
+
+                # B. Chunk (Hybrid)
+                chunk_iter = chunker.chunk(doc)
+
+                # Prepare batch data for this file
+                ids = []
+                documents = []
+                metadatas = []
+
+                for chunk in chunk_iter:
+                    text_content = chunk.text
+                    if not text_content.strip():
+                        continue
+
+                    # Generate a unique ID for Chroma
+                    ids.append(str(uuid.uuid4()))
+                    documents.append(text_content)
+                    metadatas.append(
+                        {
+                            "source": file_path,
+                            "library": lib_name,
+                            "type": "docling_hybrid",
+                        }
+                    )
+
+                if not documents:
+                    continue
+
+                # C. Embed (SentenceTransformers)
+                # We embed the list of strings in one go for speed
+                embeddings = self.embedder.encode(documents).tolist()
+
+                # D. Store (Native Chroma)
+                self.collection.add(
+                    ids=ids,
+                    documents=documents,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                )
+
+                if (i + 1) % 10 == 0:
+                    print(f"Processed {i+1}/{len(files)} files...")
+
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+
+        print("Ingestion complete.")
+
+    def query(
+        self, question: str, library_filter: Optional[str] = None, n_results: int = 5
+    ):
+        """
+        Embeds the question and searches ChromaDB.
+        """
+        # print(f"\n--- Question: '{question}' [Filter: {library_filter}] ---")
+
+        # 1. Embed the query
+        query_embedding = self.embedder.encode([question]).tolist()
+
+        # 2. Build Filter
+        # Chroma native filter syntax: where={"field": "value"}
+        where_clause = {"library": library_filter} if library_filter else None
+
+        # 3. Search
+        results = self.collection.query(
+            query_embeddings=query_embedding, n_results=n_results, where=where_clause
+        )
+
+        # 4. Parse Results
+        # Chroma returns lists of lists (because you can query multiple embeddings at once)
+        if not results["documents"][0]:
+            print("No results found.")
+            return results
+
+        return results
+
+
+@tool
+def d3js_documentation_reference(query: str) -> str:
+    """
+    Useful for answering questions about the D3.js data visualization library.
+    Use this to look up specific D3 functions, scales, or usage examples.
+    """
+    db = LibraryDocsDB()
+    results = db.query(query, library_filter="d3")["documents"][0]
+    return f"QUERY : {query}\n---\n{'---\n---'.join(results)}"
+
+
+@tool
+def threejs_documentation_reference(query: str) -> str:
+    """
+    Useful for answering questions about the Three.js 3D library.
+    Use this to find information on geometries, materials, scenes, or WebGL rendering.
+    """
+    db = LibraryDocsDB()
+    results = db.query(query, library_filter="threejs")["documents"][0]
+    return f"QUERY : {query}\n---\n{'---\n---'.join(results)}"
+
+
+if __name__ == "__main__":
+    db = LibraryDocsDB()
+    print(db.query("Explain scaleLinear", library_filter="d3"))
