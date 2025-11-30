@@ -275,12 +275,13 @@ class DoclingVectorStore:
         return merged_results
 
 
-def save_blog(title, chapters_html, author="AI Researcher"):
+def save_blog(title, chapters_html, author="Auto Distill Agent", outputs_dir="."):
     # Join chapters with a semantic section divider, not just a generic HR
     full_body = "\n".join(chapters_html)
 
     # Generate a clean filename
     filename = f"{title.replace(' ', '_').replace(':', '').lower()}_distill.html"
+    filename = os.path.join(outputs_dir, filename)
 
     html = f"""
     <!DOCTYPE html>

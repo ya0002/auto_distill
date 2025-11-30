@@ -1,4 +1,5 @@
 import os
+import shutil
 import operator
 import uuid
 import json
@@ -20,7 +21,9 @@ from tools.custom_tools import (
     arxiv_search_tool,
     search_wikipedia_tool,
     query_vector_db,
-    python_repl_tool
+    python_repl_tool,
+    d3js_documentation_reference,
+    threejs_documentation_reference
 )
 
 from utils import save_blog, DoclingVectorStore
@@ -64,6 +67,7 @@ class AgentState(TypedDict):
         str
     ]  ## something specifies by the user, would be passed to planner
     db_path: str
+    outputs_dir: str
 
     # The Master Plan
     story_title: str
@@ -111,7 +115,9 @@ def know_it_all_node(state: AgentState):
     # --- PHASE 1: THE DISCOVERY AGENT ---
     # This agent uses tools to READ, not to ingest.
 
-    search_tools = [arxiv_search_tool, search_wikipedia_tool]
+    search_tools = [
+        arxiv_search_tool, 
+        search_wikipedia_tool]
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -126,14 +132,14 @@ def know_it_all_node(state: AgentState):
         1. **Explore**: Use `arxiv_search_tool` and `search_wikipedia_tool` to find relevant material.
            - Example: If user asks for "Mamba", search Arxiv to find the full paper title "Mamba: Linear-Time Sequence Modeling...".
            - Example: If user asks for "CRISPR", search Wiki to verify the best page title.
-        2. **Select**: Choose ONE foundational paper and ONE comprehensive wiki page.
+        2. **Select**: Choose ONE foundational paper and numerous comprehensive wiki page.
         3. **Finalize**: Output a JSON object with the exact search terms to be used for ingestion.
         
         OUTPUT FORMAT (JSON ONLY):
         {{
             "reasoning": "I found paper X which covers the math, and Wiki page Y for history.",
             "arxiv_target": "The Exact Paper Title Found in Search",
-            "wiki_target": "The Exact Wiki Page Title"
+            "wiki_target": ["The Exact Wiki Page Title", ...]
         }}
         
         If no Arxiv paper is relevant (e.g., for purely historical topics), set "arxiv_target" to "None".
@@ -195,10 +201,11 @@ def know_it_all_node(state: AgentState):
         )
 
     # 2. Ingest Wikipedia (if planned)
-    target_wiki = plan.get("wiki_target")
-    if target_wiki and target_wiki != "None":
-        print(f" > Ingesting Wiki: '{target_wiki}'...")
-        all_grouped_by_header = vector_db.ingest_wikipedia(query=target_wiki)
+    target_wikis = plan.get("wiki_target")
+    for target_wiki in target_wikis or []:
+        if target_wiki and target_wiki != "None":
+            print(f" > Ingesting Wiki: '{target_wiki}'...")
+            all_grouped_by_header = vector_db.ingest_wikipedia(query=target_wiki)
 
     if not all_grouped_by_header:
         return {
@@ -418,80 +425,120 @@ def miner_node(state: AgentState):
 def coder_node(state: AgentState):
     """
     The Visualization Engineer.
-    Builds D3.js ONLY if the chapter plan asks for it.
+    Uses an AgentExecutor to reason about docs before coding.
     """
-
     if state.get("error"):
         return {}
 
+    current_idx = state["current_chapter_index"]
+    chapter = state["story_arc"][current_idx]
+    attempts = state.get("coder_attempts", 0)
+    feedback = state.get("critic_feedback", None)
+
+    # 1. Check if we need to do anything
+    if (
+        chapter["visual_requirements"] == "None"
+        or "None" in chapter["visual_requirements"]
+    ):
+        return {"current_chapter_vis": "", "coder_attempts": 0, "critic_feedback": None}
+
+    print(
+        f"---CODER (Agent): VISUALIZING CHAPTER {current_idx + 1} (Attempt {attempts + 1})---"
+    )
+
+    # 2. Define the Agent Prompt
+    # The 'agent_scratchpad' is where the tool input/outputs are automatically stored
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """
+        You are a Distill.pub Frontend Engineer.
+        
+        Your Goal: Write a visualization for a specific chapter of a story.
+        
+        RULES:
+        1. Consult the attached tools (D3.js or Three.js docs) if you are unsure about syntax.
+        2. If the concept is 2D/Charts -> Use D3.js.
+        3. If the concept is 3D/Spatial -> Use Three.js.
+        4. Output HTML/JS only. It must be self-contained in <div id='vis_chapter_{current_idx}'>.
+        5. DO NOT output markdown text (like "Here is the code"). Just the code block.
+        """,
+            ),
+            ("user", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ]
+    )
+
+    # 3. Create the Agent and Executor
+    coder_tools = [d3js_documentation_reference, threejs_documentation_reference]
+    # This automatically binds tools and handles the ReAct loop
+    agent = create_tool_calling_agent(llm_flash, coder_tools, prompt)
+
+    executor = AgentExecutor(
+        agent=agent,
+        tools=coder_tools,
+        verbose=True,  # Useful to see it thinking/calling tools in logs
+        max_iterations=5,  # Prevent infinite loops
+        handle_parsing_errors=True,  # Auto-recover if the LLM messes up tool syntax
+    )
+
+    # 4. Prepare the Input String
+    extracted_data = state["current_chapter_data"].get("extracted", "No data")
+
+    instruction_prefix = ""
+    if feedback:
+        instruction_prefix = f"""
+        !!! CRITICAL FIX REQUIRED !!!
+        Previous Attempt Rejected.
+        CRITIC FEEDBACK: "{feedback}"
+        Fix these specific errors.
+        """
+
+    user_input = f"""
+    TARGET DIV ID: vis_chapter_{current_idx}
+    CHAPTER GOAL: {chapter['goal']}
+    VISUALIZATION IDEA: {chapter['visual_requirements']}
+    DATA AVAILABLE: {extracted_data}
+    
+    {instruction_prefix}
+    
+    Task: Write the code.
+    """
+
+    # 5. Invoke the Agent
     try:
-        current_idx = state["current_chapter_index"]
-        chapter = state["story_arc"][current_idx]
-        attempts = state.get("coder_attempts", 0)
-        feedback = state.get("critic_feedback", None)
+        result = executor.invoke({"input": user_input, "current_idx": current_idx})
 
-        print(
-            f"---CODER: VISUALIZING CHAPTER {current_idx + 1}  (Attempt {attempts + 1})---"
+        # AgentExecutor returns a dict usually containing 'input' and 'output'
+        raw_output = result["output"]
+        content = ""
+
+        # Check if output is a list (Gemini/Vertex often returns a list of blocks)
+        if isinstance(raw_output, list):
+            for block in raw_output:
+                # Handle dictionary blocks (e.g. {'type': 'text', 'text': '...'})
+                if isinstance(block, dict) and "text" in block:
+                    content += block["text"]
+                # Handle direct strings in list
+                elif isinstance(block, str):
+                    content += block
+        else:
+            # Standard string output
+            content = str(raw_output)
+
+        # Cleanup markdown formatting if the agent added it
+        clean_code = (
+            content.replace("```html", "")
+            .replace("```javascript", "")
+            .replace("```", "")
         )
-
-        if (
-            chapter["visual_requirements"] == "None"
-            or "None" in chapter["visual_requirements"]
-        ):
-            return {
-                "current_chapter_vis": "",
-                "coder_attempts": 0,
-                "critic_feedback": None,
-            }
-
-        extracted_data = state["current_chapter_data"].get("extracted", "No data")
-
-        # Dynamic prompting based on whether this is a retry
-        instruction_prefix = ""
-        if feedback:
-            instruction_prefix = f"""
-          !!! CRITICAL FIX REQUIRED !!!
-          Your previous code was REJECTED by the Quality Assurance Critic.
-
-          CRITIC FEEDBACK:
-          "{feedback}"
-
-          You must fix these specific errors in your new code.
-          """
-
-        prompt = f"""
-      {instruction_prefix}
-      You are a Distill.pub Frontend Engineer.
-
-      CHAPTER GOAL: {chapter['goal']}
-      VISUALIZATION IDEA: {chapter['visual_requirements']}
-      DATA AVAILABLE: {extracted_data}
-
-      Task: Write a visualization to represent this concept/data.
-
-      DECISION LOGIC:
-      - If the concept involves charts, flows, or 2D data: Use **D3.js (v7)**.
-      - If the concept involves 3D geometry, stacked layers, or embeddings: Use **Three.js**.
-
-      REQUIREMENTS:
-      1. It must be interactive (tooltips, hover states, or mouse rotation).
-      2. It must be self-contained in a <div id='vis_chapter_{current_idx}' style='width:100%; height:400px; position:relative;'>.
-      3. Output ONLY the raw HTML/JS.
-
-      IMPORTANT FOR THREE.JS:
-      - Append the renderer to the div '#vis_chapter_{current_idx}'.
-      - Handle window resize if possible.
-      - Start the animation loop immediately.
-      """
-
-        response = llm_flash.invoke(prompt)
-        clean_code = response.content.replace("```html", "").replace("```", "")
 
         return {"current_chapter_vis": clean_code, "coder_attempts": attempts + 1}
 
     except Exception as e:
-        print(f"Error in Coder: {e}")
-        return {"error": f"Coder failed to generate visualization: {str(e)}"}
+        print(f"Agent Execution Failed: {e}")
+        return {"error": str(e)}
 
 
 def critic_node(state: AgentState):
@@ -659,6 +706,12 @@ def router_node(state: AgentState):
         print(f"\n!!! SYSTEM HALT DUE TO ERROR: {state['error']} !!!")
         return "finish"
 
+    ## write out the current blog progress
+    title = state.get("story_title")
+    chapters = state.get("finished_chapters", [])
+    filename = save_blog(title, chapters, outputs_dir=state["outputs_dir"])
+    print(f"---BLOG PROGRESS SAVED: {len(chapters)} chapters done. SAVED IN {filename}---")
+
     current_idx = state["current_chapter_index"]
     total_chapters = len(state["story_arc"])
 
@@ -741,12 +794,20 @@ def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None, 
         "critic_feedback": None,
         "coder_attempts": 0,
         "db_path": db_path,
+        "outputs_dir": outputs_dir,
     }
     app = build_workflow()
     final_state = app.invoke(initial_state, config={"recursion_limit": 100})
+
     title = final_state.get("story_title", user_query)
     chapters = final_state.get("finished_chapters", [])
-    return save_blog(title, chapters, outputs_dir)
+    filename =save_blog(title, chapters, outputs_dir=outputs_dir)
+
+    # deltete the vector db folder to save space
+    if os.path.exists(db_path):
+        shutil.rmtree(db_path)
+
+    return filename
 
 
 def run_agent_with_pdf(pdf_path: str, outputs_dir: str) -> str:

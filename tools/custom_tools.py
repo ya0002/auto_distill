@@ -362,7 +362,7 @@ def d3js_documentation_reference(query: str) -> str:
     Useful for answering questions about the D3.js data visualization library.
     Use this to look up specific D3 functions, scales, or usage examples.
     """
-    db = LibraryDocsDB()
+    db = LibraryDocsDB(auto_ingest=False)
     results = db.query(query, library_filter="d3")["documents"][0]
     return f"QUERY : {query}\n---\n{'---\n---'.join(results)}"
 
@@ -373,7 +373,7 @@ def threejs_documentation_reference(query: str) -> str:
     Useful for answering questions about the Three.js 3D library.
     Use this to find information on geometries, materials, scenes, or WebGL rendering.
     """
-    db = LibraryDocsDB()
+    db = LibraryDocsDB(auto_ingest=False)
     results = db.query(query, library_filter="threejs")["documents"][0]
     return f"QUERY : {query}\n---\n{'---\n---'.join(results)}"
 
