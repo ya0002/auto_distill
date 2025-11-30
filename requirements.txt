@@ -1,0 +1,16 @@
+gradio>=4.38.0
+chromadb>=0.5.3
+docling
+docling-core~=2.29
+langgraph>=0.2.30
+langchain>=0.3.6
+langchain-experimental>=0.3.2
+langchain-google-genai>=2.0.0
+langchain-community>=0.3.6
+wikipedia
+arxiv
+tqdm
+networkx
+pandas
+ddgs
+trafilatura
