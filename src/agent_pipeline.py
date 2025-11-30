@@ -921,8 +921,11 @@ async def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = 
     filename =save_blog(title, chapters, outputs_dir=outputs_dir)
 
     # deltete the vector db folder to save space
-    if os.path.exists(db_path):
-        shutil.rmtree(db_path)
+    try:
+        if os.path.exists(db_path):
+            shutil.rmtree(db_path)
+    except Exception as e:
+        print(f"Error deleting db_path {db_path}: {e}")
 
     return filename
 
