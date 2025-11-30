@@ -282,7 +282,7 @@ def planner_node(state: AgentState):
 
         CRITICAL:
         - The story must flow: Intro -> Core Concept -> Deep Dive/Data -> Conclusion.
-        - Plan for at least 5-15 chapters.
+        - Plan for at least 2-3 chapters.
         - Ensure at least one chapter focuses heavily on the DATA.
         - **VISUALS:** We want a highly visual blog. Plan for numerous visuals in *EVERY* chapter. If no data exists for a chapter, request a "Conceptual Diagram" .
 
@@ -646,7 +646,7 @@ async def video_agent_node(state: AgentState):
 
         video_filename = f"video_chapter_{current_idx}.mp4"
         video_path = None
-        os.makedirs(os.path.join(state["output_dir"], "videos"), exist_ok=True)
+        os.makedirs(os.path.join(state["outputs_dir"], "videos"), exist_ok=True)
 
         try:
             # 4. Extract URL using the specific logic from your snippet
@@ -671,7 +671,7 @@ async def video_agent_node(state: AgentState):
 
                 # 5. Download
                 video_path = os.path.join(
-                    os.path.join(state["output_dir"], "videos"), video_filename
+                    os.path.join(state["outputs_dir"], "videos"), video_filename
                 )
                 try:
                     # 3. Download directly
