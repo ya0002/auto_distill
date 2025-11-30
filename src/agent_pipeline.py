@@ -6,12 +6,15 @@ import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Sequence, TypedDict
 from typing import Annotated, Sequence, TypedDict, Dict, Any, List
+import urllib.request
+import asyncio
 
 
 # LangChain / LangGraph
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
+from langchain.agents import create_agent
 from langgraph.graph import StateGraph, END
 
 # LLMs
@@ -25,6 +28,8 @@ from tools.custom_tools import (
     d3js_documentation_reference,
     threejs_documentation_reference
 )
+
+from tools.mcp_tools import video_client
 
 from utils import save_blog, DoclingVectorStore
 
@@ -77,6 +82,7 @@ class AgentState(TypedDict):
     current_chapter_index: int
     current_chapter_data: Dict[str, Any]  # Data mined for specific chapter
     current_chapter_vis: str  # HTML/JS for specific chapter
+    current_chapter_video: Optional[str]  # Video URL if any
 
     # Outputs
     finished_chapters: List[str]  # List of HTML strings (the body text)
@@ -606,6 +612,87 @@ def critic_node(state: AgentState):
         return {"critic_feedback": None}
 
 
+async def video_agent_node(state: AgentState):
+    """
+    The Videographer.
+    Finds and downloads a relevant video for the current chapter using the custom agent.
+    """
+    if state.get("error"):
+        return {}
+
+    try:
+        current_idx = state["current_chapter_index"]
+        chapter = state["story_arc"][current_idx]
+
+        print(f"---VIDEO AGENT: LOOKING FOR CLIPS FOR '{chapter['title']}'---")
+
+        # 1. Initialize the custom agent
+        video_tools = await video_client.get_tools()
+        agent = create_agent(
+            model=llm_flash,
+            tools=video_tools,
+            system_prompt="""You are a scientific video creation assistant. 
+                             Create a video according to the user query.
+                             Only make videos if the CONCEPT is scientific other wise return 'None'.""",
+        )
+
+        # 2. Formulate the query
+        query = f"CONCEPT: {chapter['title']} - {chapter['goal']}"
+
+        # 3. Invoke the agent (using ainvoke as per your snippet, but we must await it)
+        response = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": query}]}
+        )
+
+        video_filename = f"video_chapter_{current_idx}.mp4"
+        video_path = None
+        os.makedirs(os.path.join(state["output_dir"], "videos"), exist_ok=True)
+
+        try:
+            # 4. Extract URL using the specific logic from your snippet
+
+            # Locate the message containing the tool output (Video Search Result)
+
+            last_msg = response["messages"][2]
+            content_to_parse = last_msg.content
+
+            if isinstance(content_to_parse, str):
+                if content_to_parse in ["None", "'None'"]:
+                    return {"current_chapter_video": None}
+
+                # Sometimes the model wraps it in markdown blocks
+                clean_content = (
+                    content_to_parse.replace("```json", "").replace("```", "").strip()
+                )
+
+                video_url = eval(json.loads(clean_content)[0])["video"]["url"]
+
+                print(f" > Found Video URL: {video_url}")
+
+                # 5. Download
+                video_path = os.path.join(
+                    os.path.join(state["output_dir"], "videos"), video_filename
+                )
+                try:
+                    # 3. Download directly
+                    urllib.request.urlretrieve(video_url, video_path)
+                    print("Download complete!")
+                except Exception as e:
+                    print(f"Error: {e}")
+
+                print(f" > Download complete: {video_path}")
+
+        except Exception as e:
+            print(f" > Video extraction/download failed: {e}")
+            video_path = None
+
+        return {"current_chapter_video": video_path}
+
+    except Exception as e:
+        print(f"Error in Video Agent: {e}")
+        return {"current_chapter_video": None}
+
+
 def writer_node(state: AgentState):
     """
     The Storyteller.
@@ -622,11 +709,16 @@ def writer_node(state: AgentState):
 
         data = state["current_chapter_data"].get("extracted", "")
         vis = state["current_chapter_vis"]
+        video_path = state.get("current_chapter_video")
 
         # Determine if visual exists to instruct the writer properly
         visual_instruction = "NO visual available for this chapter."
         if vis and len(vis) > 50:
             visual_instruction = "An interactive visualization IS available. You MUST insert the placeholder `{{INSERT_VISUAL_HERE}}` in the text where it fits best."
+
+        video_instruction = "NO video available."
+        if video_path:
+            video_instruction = f"A video file has been downloaded to '{video_path}'. You MUST insert the placeholder `{{INSERT_VIDEO_HERE}}` where a video demonstration would be helpful."
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -649,7 +741,7 @@ def writer_node(state: AgentState):
           7. VISUAL STATUS: {visual_instruction}.
           8. Use LaTeX formatting for math (e.g., $d_model$, $N=6$)
           9. **CRITICAL FORMATTING RULE:** Do NOT use Markdown for bolding or italics (like **text** or *text*). Browsers will not render this. YOU MUST USE HTML TAGS: <b>bold</b>, <i>italics</i>, <strong>strong</strong>.
-
+        10. VIDEO STATUS: {video_instruction}
           """,
                 ),
                 ("user", "Data Context: {data}"),
@@ -663,6 +755,7 @@ def writer_node(state: AgentState):
                 "goal": chapter["goal"],
                 "data": str(data),
                 "visual_instruction": visual_instruction,
+                "video_instruction": video_instruction,
             }
         )
 
@@ -675,6 +768,27 @@ def writer_node(state: AgentState):
                 )
             else:
                 chapter_content += f"\n<div class='vis-wrapper'>{vis}</div>"
+
+        # 2. Inject Video Tag (NEW)
+        if video_path:
+          # Use relative path for HTML portability
+          video_filename = os.path.basename(video_path)
+          relative_video_path = f"videos/{video_filename}"
+          
+          video_html = f"""
+          <figure>
+              <video width="100%" controls>
+                  <source src="{relative_video_path}" type="video/mp4">
+                  Your browser does not support the video tag.
+              </video>
+              <figcaption>Video resource for {chapter['title']}</figcaption>
+          </figure>
+          """
+          if "{{INSERT_VIDEO_HERE}}" in chapter_content:
+              chapter_content = chapter_content.replace("{{INSERT_VIDEO_HERE}}", video_html)
+          else:
+              # If LLM forgot to place it, append to bottom
+              chapter_content += video_html
 
         # Wrap in a section tag
         full_chapter_html = f"<section id='chapter-{current_idx}'><h2>{chapter['title']}</h2>{chapter_content}</section>"
@@ -751,7 +865,8 @@ def build_workflow():
     workflow.add_node("planner", planner_node)
     workflow.add_node("miner", miner_node)
     workflow.add_node("coder", coder_node)
-    workflow.add_node("critic", critic_node)  # NEW NODE
+    workflow.add_node("critic", critic_node)
+    workflow.add_node("video_agent", video_agent_node)
     workflow.add_node("writer", writer_node)
 
     # Entry
@@ -760,7 +875,8 @@ def build_workflow():
     # Logic
     workflow.add_edge("know_it_all", "planner")
     workflow.add_edge("planner", "miner")  # Start the loop
-    workflow.add_edge("miner", "coder")
+    workflow.add_edge("miner", "video_agent") 
+    workflow.add_edge("video_agent", "coder")
     workflow.add_edge("coder", "critic")  # Coder sends to Critic
 
     # Conditional Edge for Critic
@@ -778,7 +894,7 @@ def build_workflow():
     return workflow.compile()
 
 
-def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None, raw_sections: Dict[str, Any] = None) -> str:
+async def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None, raw_sections: Dict[str, Any] = None) -> str:
     db_path = db_path or os.path.join(outputs_dir, f"my_rag_data_{uuid.uuid4()}")
     initial_state: AgentState = {
         "raw_sections": raw_sections,
@@ -795,9 +911,10 @@ def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None, 
         "coder_attempts": 0,
         "db_path": db_path,
         "outputs_dir": outputs_dir,
+        "current_chapter_video": None,  # Initialize with no video URL
     }
     app = build_workflow()
-    final_state = app.invoke(initial_state, config={"recursion_limit": 100})
+    final_state = await app.ainvoke(initial_state, config={"recursion_limit": 100})
 
     title = final_state.get("story_title", user_query)
     chapters = final_state.get("finished_chapters", [])
@@ -810,11 +927,11 @@ def run_agent(user_query: str, outputs_dir: str, db_path: Optional[str] = None, 
     return filename
 
 
-def run_agent_with_pdf(pdf_path: str, outputs_dir: str) -> str:
+async def run_agent_with_pdf(pdf_path: str, outputs_dir: str) -> str:
     db_path = os.path.join(outputs_dir, f"my_rag_data_{uuid.uuid4()}")
     # Ingest via MCP server tool
     store = DoclingVectorStore(db_path=db_path)
     grouped = store.ingest_pdf(pdf_path)
 
     # Use filename stem as query topic
-    return run_agent("", outputs_dir, db_path=db_path, raw_sections=grouped)
+    return await run_agent("", outputs_dir, db_path=db_path, raw_sections=grouped)
