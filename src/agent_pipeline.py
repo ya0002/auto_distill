@@ -644,7 +644,7 @@ async def video_agent_node(state: AgentState):
             {"messages": [{"role": "user", "content": query}]}
         )
 
-        video_filename = f"video_chapter_{current_idx}.mp4"
+        video_filename = f"video_chapter_{current_idx}_{uuid.uuid4()}.mp4"
         video_path = None
         os.makedirs(os.path.join(state["outputs_dir"], "videos"), exist_ok=True)
 
