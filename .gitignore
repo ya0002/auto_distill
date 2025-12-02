@@ -44,7 +44,7 @@ htmlcov/
 
 # Project data outputs (generated)
 data/
-outputs/
+# outputs/
 
 # SQLite/Chroma vector store artifacts
 # *.sqlite3
