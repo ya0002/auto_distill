@@ -281,7 +281,7 @@ def planner_node(state: AgentState):
         4. 'visual_requirements': A descriptions of an interactive visualization to build. If none, put "None".
 
         CRITICAL:
-        - The story must flow: Intro -> Core Concept -> Deep Dive/Data -> Conclusion.
+        - The story must flow: Intro -> Core Concept -> Deep Dive/Data -> Conclusion -> References.
         - Plan for at least 7-10 chapters.
         - Ensure at least one chapter focuses heavily on the DATA.
         - Ensure at least one chapter focuses on references.
