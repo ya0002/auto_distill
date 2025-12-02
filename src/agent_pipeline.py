@@ -282,8 +282,9 @@ def planner_node(state: AgentState):
 
         CRITICAL:
         - The story must flow: Intro -> Core Concept -> Deep Dive/Data -> Conclusion.
-        - Plan for at least 2-3 chapters.
+        - Plan for at least 7-10 chapters.
         - Ensure at least one chapter focuses heavily on the DATA.
+        - Ensure at least one chapter focuses on references.
         - **VISUALS:** We want a highly visual blog. Plan for numerous visuals in *EVERY* chapter. If no data exists for a chapter, request a "Conceptual Diagram" .
 
         Output format: JSON ONLY.
