@@ -1,0 +1,991 @@
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Beyond the Average: Unveiling Hidden Insights with Quantile Regression</title>
+        
+        <script src="https://d3js.org/d3.v7.min.js"></script>
+        
+        <script>
+        window.MathJax = {
+          tex: {
+            inlineMath: [['$', '$'], ['\\(', '\\)']],
+            displayMath: [['$$', '$$'], ['\\[', '\\]']]
+          },
+          svg: {
+            fontCache: 'global'
+          }
+        };
+        </script>
+        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+        <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300&display=swap" rel="stylesheet">
+        
+        <style>
+            :root {
+                --font-sans: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                --font-serif: 'Merriweather', Georgia, 'Times New Roman', serif;
+                --color-text: #333;
+                --color-bg: #fff;
+                --color-accent: #000; /* Distill uses minimal color, mostly black/white */
+                --color-caption: #666;
+                --width-text: 700px;
+                --width-wide: 1000px;
+            }
+
+            /* --- BASE LAYOUT --- */
+            body {
+                font-family: var(--font-serif);
+                line-height: 1.6;
+                color: var(--color-text);
+                background: var(--color-bg);
+                margin: 0;
+                padding: 0;
+                font-size: 19px; /* Distill uses slightly larger text for readability */
+            }
+
+            /* Center the main content column */
+            article {
+                max-width: var(--width-text);
+                margin: 0 auto;
+                padding: 2rem 1.5rem;
+            }
+
+            /* --- TYPOGRAPHY --- */
+            h1, h2, h3, h4, .front-matter {
+                font-family: var(--font-sans);
+            }
+
+            h1 {
+                font-size: 3rem;
+                font-weight: 700;
+                line-height: 1.1;
+                margin-top: 3rem;
+                margin-bottom: 1rem;
+                letter-spacing: -0.02em;
+            }
+
+            h2 {
+                font-size: 1.75rem;
+                font-weight: 500;
+                margin-top: 3rem;
+                margin-bottom: 1rem;
+                border-bottom: 1px solid rgba(0,0,0,0.1);
+                padding-bottom: 0.5rem;
+            }
+
+            h3 {
+                font-size: 1.25rem;
+                font-weight: 600;
+                margin-top: 2rem;
+                margin-bottom: 0.5rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: #555;
+            }
+
+            p {
+                margin-bottom: 1.5em;
+                font-weight: 300;
+            }
+
+            a {
+                color: #0044cc;
+                text-decoration: none;
+                border-bottom: 1px solid transparent;
+                transition: border 0.2s;
+            }
+            
+            a:hover {
+                border-bottom: 1px solid #0044cc;
+            }
+
+            /* --- CODE BLOCKS --- */
+            pre {
+                background: #f7f7f7;
+                padding: 15px;
+                border-radius: 5px;
+                overflow-x: auto;
+                font-size: 0.85em;
+                border: 1px solid #eee;
+            }
+            
+            code {
+                background: rgba(0,0,0,0.05);
+                padding: 2px 4px;
+                border-radius: 3px;
+                font-family: 'Menlo', 'Consolas', monospace;
+                font-size: 0.9em;
+            }
+
+            /* --- FIGURES & VISUALIZATIONS --- */
+            /* Figures allow breaking out of the text column if needed */
+            figure {
+                margin: 2.5rem 0;
+                text-align: center;
+            }
+
+            img, svg {
+                max-width: 100%;
+                height: auto;
+            }
+
+            figcaption {
+                font-family: var(--font-sans);
+                font-size: 0.85rem;
+                color: var(--color-caption);
+                margin-top: 10px;
+                line-height: 1.4;
+                text-align: left; /* Distill captions are often left-aligned even if img is centered */
+            }
+
+            .vis-wrapper { 
+                margin: 40px 0; 
+                padding: 20px; 
+                background: white; 
+                border: 1px solid #eee; 
+                border-radius: 8px; 
+            }
+
+            /* --- FRONT MATTER (Title Block) --- */
+            .front-matter {
+                margin-bottom: 4rem;
+                text-align: left;
+                border-bottom: 1px solid #eee;
+                padding-bottom: 2rem;
+            }
+
+            .authors {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 20px;
+                font-size: 1rem;
+                color: #444;
+                margin-top: 1rem;
+            }
+
+            .author-name {
+                font-weight: 500;
+                color: #000;
+            }
+
+            .metadata {
+                margin-top: 1rem;
+                font-size: 0.85rem;
+                color: #777;
+            }
+
+        </style>
+    </head>
+    <body>
+
+        <article>
+            <div class="front-matter">
+                <h1>Beyond the Average: Unveiling Hidden Insights with Quantile Regression</h1>
+                <div class="authors">
+                    <div>
+                        <span class="author-name">Auto Distill Agent</span><br>
+                        <span style="font-size: 0.9em;">AI Research Assistant</span>
+                    </div>
+                </div>
+                <div class="metadata">
+                    Published on November 30, 2025 &bull; Generated by Agentic Workflow
+                </div>
+            </div>
+
+            <section id='chapter-0'><h2>The Limits of the Average: Why We Need More</h2><h3>Chapter 1: The Tyranny of the Average</h3>
+
+<p>Imagine you're trying to understand something important. Maybe it's how much exercise affects people's heart rates, or how many years of education influence someone's income. What's the first thing many of us reach for? The average. We love averages! They're neat, tidy, and give us a single number to latch onto. But what if I told you that sometimes, the average isn't just unhelpful, it's downright misleading?</p>
+
+<p>Let's take a common tool in the data scientist's arsenal: <b>Ordinary Least Squares (OLS) regression</b>. You might know it as "finding the line of best fit." Think of it like this: you have a bunch of dots on a graph, showing how one thing (like study hours) relates to another (like exam scores). OLS tries to draw a single straight line through those dots that gets as close as possible to <i>all</i> of them. It does this by minimizing the sum of the squared distances from each dot to the line. In mathematical terms, it's trying to find the line $y = \beta_0 + \beta_1 x + \epsilon$ where the errors $\epsilon$ (the vertical distances from the dots to the line) are as small as possible on average, specifically minimizing $\sum_{i=1}^N (y_i - (\beta_0 + \beta_1 x_i))^2$.</p>
+
+{INSERT_VIDEO_HERE}
+
+<p>This approach is incredibly powerful and has given us countless insights. It tells us about the <i>average</i> relationship. For example, if we're looking at education and income, OLS might tell us that, on average, each additional year of education is associated with an extra $X$ amount of income. Sounds great, right?</p>
+
+<p>But here's the catch: people aren't average. You're not average. I'm not average. While an average can describe a group, it rarely describes any individual within that group perfectly. And when we rely solely on the average, we miss out on a whole universe of nuance. We miss the story of those at the bottom, those in the middle, and especially those at the top of the distribution.</p>
+
+<p>Consider our education and income example again. Does an extra year of education boost the income of someone struggling to find work in a tough economy by the same amount as it boosts the income of someone already in a high-paying field? Probably not. OLS, by focusing on that single "average" line, assumes that the effect of education is roughly the same for everyone, regardless of where they fall on the income spectrum.</p>
+
+<p>Imagine a scatter plot where the relationship between two variables isn't a neat, uniform cloud. What if, for people with lower values of X, the Y values are tightly clustered around the average line, but for people with higher values of X, the Y values are much more spread out? This phenomenon, where the variability of the data changes across the range of the independent variable, is common. OLS will still draw its single average line right through the middle, but it won't capture the changing spread or the differing effects at different levels of Y.</p>
+
+<p>This is where the limitations of relying solely on the average become glaringly obvious. We're essentially trying to understand a complex, multi-faceted landscape by looking only at its highest peak. We might know the average elevation, but we'd completely miss the valleys, the plateaus, and the subtle slopes that define the terrain. By focusing only on the mean, we might:
+<ul>
+    <li><b>Mask important differences:</b> The effect of a policy or an intervention might be strong for some groups but weak or even non-existent for others.</li>
+    <li><b>Be misled by outliers:</b> Extreme values can pull the average line significantly, distorting the picture for the majority of the data points.</li>
+    <li><b>Miss changing relationships:</b> The relationship between two variables might change its nature depending on whether you're looking at low values, middle values, or high values of the outcome.</li>
+</ul>
+</p>
+
+<p>So, if the average isn't always enough, what's the alternative? How can we peer into the full spectrum of relationships, understanding not just what happens <i>on average</i>, but what happens to the struggling, the median earner, and the high-flyer? This is precisely the problem that <b>quantile regression</b> steps in to solve. It's a way of looking beyond the tyranny of the average and truly understanding the rich, diverse stories hidden within our data.</p>
+          <figure>
+              <video width="100%" controls>
+                  <source src="videos/video_chapter_0.mp4" type="video/mp4">
+                  Your browser does not support the video tag.
+              </video>
+              <figcaption>Video resource for The Limits of the Average: Why We Need More</figcaption>
+          </figure>
+          </section>
+<section id='chapter-1'><h2>What's a Quantile, Anyway? A Deep Dive into Distribution</h2><h3>What's a Quantile, Anyway? A Deep Dive into Distribution</h3>
+
+<p>Ever tried to describe a group of people, or a set of numbers, using just one value? Most often, we reach for the <b>average</b>, or the <i>mean</i>. It's a trusty tool, isn't it? If someone asks about the typical salary at a company, you might say, "The average salary is $70,000." Sounds simple, right?</p>
+
+<p>But what if that company has one CEO making $10 million a year, and 99 employees making $50,000 each? The average salary would be:</p>
+<p>$$ \frac{(\$10,000,000 \times 1) + (\$50,000 \times 99)}{100} = \frac{\$10,000,000 + \$4,950,000}{100} = \frac{\$14,950,000}{100} = \$149,500 $$</p>
+<p>Suddenly, the "average" salary is $149,500! Does that really represent the "typical" employee? Not at all! Most people are making far less. The CEO's gigantic salary completely skewed our understanding. This is where relying solely on the mean can lead us astray.</p>
+
+<h3>Dividing the Data Pie: What is a Quantile?</h3>
+
+<p>Imagine you have a big pile of data, like all the salaries at that company. Instead of just squishing it all together to get an average, what if we wanted to divide it up into more meaningful chunks? That's exactly what <b>quantiles</b> do!</p>
+
+<p>Think of it like cutting a cake. If you cut it into two equal halves, the cut point is the <i>median</i>. If you cut it into four equal pieces, you get <i>quartiles</i>. If you cut it into 100 equal pieces, you get <i>percentiles</i>. Each of these cut points is a type of quantile.</p>
+
+<ul>
+    <li>The <b>median</b> (or 0.5 quantile) is the middle value. Half the data is below it, half is above it. In our skewed salary example, the median would be $50,000, which is a much better representation of the typical employee!</li>
+    <li><b>Quartiles</b> divide your data into four equal parts. The first quartile (Q1, or 0.25 quantile) means 25% of the data falls below this value. The second quartile is the median (Q2, or 0.5 quantile). The third quartile (Q3, or 0.75 quantile) means 75% of the data falls below it.</li>
+    <li><b>Percentiles</b> are even finer divisions, splitting the data into 100 parts. The 10th percentile means 10% of the data is below that value, and so on.</li>
+</ul>
+
+<p>The beauty of quantiles is that they don't just tell you about the "center" of your data; they tell you about its <b>entire distribution</b>. They help you understand where different proportions of your data lie.</p>
+
+<h3>Quantiles in Action: Understanding Growth Charts</h3>
+
+<p>Let's look at a real-world example you might already be familiar with: <b>growth charts</b> for children. When a baby goes for a check-up, the doctor measures their weight and height and plots it on a chart. These charts aren't just showing an average; they're showing percentile curves!</p>
+
+<p>If a baby is on the 75th percentile for weight, it means that 75% of babies of the same age and sex weigh less than this baby, and 25% weigh more. This is incredibly useful for screening for abnormal growth (as mentioned in our data context: "Percentiles are a specific type of quantile, illustrating their use in dividing a distribution."). It allows doctors to see if a child's growth is typical for their age, or if they are at the very low or very high end of the distribution, which might warrant further investigation.</p>
+
+<h3>Why Quantiles are Different (and Often Better) than the Mean</h3>
+
+<p>The key difference, as we saw with the salary example, is <b>robustness to outliers</b>. The mean is easily pulled around by extreme values. Quantiles, especially the median, are much less affected. If our CEO's salary doubled, the mean would jump even higher, but the median would stay exactly the same ($50,000)!</p>
+
+<p>Our data context highlights this: "One advantage of quantile regression relative to ordinary least squares regression is that the quantile regression estimates are more robust against outliers in the response measurements." This robustness makes quantiles powerful for understanding data that might be skewed or have unusual values.</p>
+
+<p>Beyond robustness, quantiles offer a <b>more comprehensive view</b>. Imagine you're studying the relationship between the amount of fertilizer used and crop yield. The average yield might show a weak relationship. But what if fertilizer has a huge impact on the <i>lowest</i> yielding farms, bringing them up significantly, while having less impact on already high-yielding farms? The mean wouldn't capture this nuance. Quantiles would! Our data context notes: "In ecology, quantile regression has been proposed and used as a way to discover more useful predictive relationships between variables in cases where there is no relationship or only a weak relationship between the means of such variables."</p>
+
+<p>This means quantiles allow us to ask questions like:
+<ul>
+    <li>What factors influence the <i>lowest 10%</i> of crop yields?</li>
+    <li>What predicts the <i>highest 25%</i> of student test scores?</li>
+    <li>How do factors affect the <i>median</i> house price, versus the <i>top 90%</i> of house prices?</li>
+</ul>
+These are questions the mean simply can't answer.</p>
+
+<h3>Visualizing the Distribution with Quantiles</h3>
+
+<p>Let's make this concept even clearer. Imagine we have a dataset of student test scores. Instead of just seeing the average, we can divide the scores into quantiles to understand the spread. The interactive visualization below allows you to see how different quantiles carve up a distribution. Try adjusting the quantile slider to see how the cut-off points move and how the data is divided.</p>
+
+<div class='vis-wrapper'>
+<div id='vis_chapter_1'></div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+    // Data generation (log-normal distribution for skewness)
+    function generateLogNormalData(mu, sigma, numPoints) {
+        const data = [];
+        for (let i = 0; i < numPoints; i++) {
+            const u1 = Math.random();
+            const u2 = Math.random();
+            const z0 = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+            data.push(Math.exp(mu + sigma * z0));
+        }
+        return data;
+    }
+
+    const data = generateLogNormalData(0, 0.8, 1000); // mu=0, sigma=0.8 for some skew
+
+    const margin = { top: 40, right: 30, bottom: 60, left: 60 };
+    const width = 500 - margin.left - margin.right;
+    const height = 300 - margin.top - margin.bottom;
+
+    const visContainer = d3.select("#vis_chapter_1");
+
+    // --- Histogram ---
+    const svgHist = visContainer.append("svg")
+        .attr("width", width + margin.left + margin.right)
+        .attr("height", height + margin.top + margin.bottom)
+        .append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const xHist = d3.scaleLinear()
+        .domain([0, d3.max(data) * 1.1])
+        .range([0, width]);
+
+    svgHist.append("g")
+        .attr("transform", `translate(0,${height})`)
+        .call(d3.axisBottom(xHist));
+
+    const histogram = d3.histogram()
+        .value(d => d)
+        .domain(xHist.domain())
+        .thresholds(xHist.ticks(40));
+
+    const bins = histogram(data);
+
+    const yHist = d3.scaleLinear()
+        .domain([0, d3.max(bins, d => d.length)])
+        .range([height, 0]);
+
+    svgHist.append("g")
+        .call(d3.axisLeft(yHist));
+
+    svgHist.selectAll("rect")
+        .data(bins)
+        .enter()
+        .append("rect")
+        .attr("x", 1)
+        .attr("transform", d => `translate(${xHist(d.x0)},${yHist(d.length)})`)
+        .attr("width", d => xHist(d.x1) - xHist(d.x0) - 1)
+        .attr("height", d => height - yHist(d.length))
+        .style("fill", "#69b3a2")
+        .style("opacity", 0.8);
+
+    // Add X axis label for histogram
+    svgHist.append("text")
+        .attr("text-anchor", "middle")
+        .attr("x", width / 2)
+        .attr("y", height + margin.bottom - 15)
+        .text("Value");
+
+    // Add Y axis label for histogram
+    svgHist.append("text")
+        .attr("text-anchor", "middle")
+        .attr("transform", "rotate(-90)")
+        .attr("y", -margin.left + 15)
+        .attr("x", -height / 2)
+        .text("Frequency");
+
+    // Add title for histogram
+    svgHist.append("text")
+        .attr("x", (width / 2))
+        .attr("y", 0 - (margin.top / 2))
+        .attr("text-anchor", "middle")
+        .style("font-size", "16px")
+        .style("font-weight", "bold")
+        .text("Data Distribution (Histogram)");
+
+
+    // --- CDF ---
+    const svgCDF = visContainer.append("svg")
+        .attr("width", width + margin.left + margin.right)
+        .attr("height", height + margin.top + margin.bottom)
+        .append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    // Sort data for CDF
+    data.sort(d3.ascending);
+
+    // Calculate CDF points
+    const cdfData = [];
+    for (let i = 0; i < data.length; i++) {
+        cdfData.push({ value: data[i], probability: (i + 1) / data.length });
+    }
+
+    const xCDF = d3.scaleLinear()
+        .domain([0, d3.max(data) * 1.1])
+        .range([0, width]);
+
+    svgCDF.append("g")
+        .attr("transform", `translate(0,${height})`)
+        .call(d3.axisBottom(xCDF));
+
+    const yCDF = d3.scaleLinear()
+        .domain([0, 1])
+        .range([height, 0]);
+
+    svgCDF.append("g")
+        .call(d3.axisLeft(yCDF));
+
+    const cdfLine = d3.line()
+        .x(d => xCDF(d.value))
+        .y(d => yCDF(d.probability));
+
+    svgCDF.append("path")
+        .datum(cdfData)
+        .attr("fill", "none")
+        .attr("stroke", "steelblue")
+        .attr("stroke-width", 2)
+        .attr("d", cdfLine);
+
+    // Add X axis label for CDF
+    svgCDF.append("text")
+        .attr("text-anchor", "middle")
+        .attr("x", width / 2)
+        .attr("y", height + margin.bottom - 15)
+        .text("Value");
+
+    // Add Y axis label for CDF
+    svgCDF.append("text")
+        .attr("text-anchor", "middle")
+        .attr("transform", "rotate(-90)")
+        .attr("y", -margin.left + 15)
+        .attr("x", -height / 2)
+        .text("Cumulative Probability");
+
+    // Add title for CDF
+    svgCDF.append("text")
+        .attr("x", (width / 2))
+        .attr("y", 0 - (margin.top / 2))
+        .attr("text-anchor", "middle")
+        .style("font-size", "16px")
+        .style("font-weight", "bold")
+        .text("Cumulative Distribution Function (CDF)");
+
+    // --- Mean and Median on Histogram ---
+    const meanValue = d3.mean(data);
+    const medianValue = d3.median(data);
+
+    // Mean line
+    svgHist.append("line")
+        .attr("x1", xHist(meanValue))
+        .attr("y1", 0)
+        .attr("x2", xHist(meanValue))
+        .attr("y2", height)
+        .attr("stroke", "red")
+        .attr("stroke-dasharray", "4")
+        .attr("stroke-width", 2);
+
+    svgHist.append("text")
+        .attr("x", xHist(meanValue) + 5)
+        .attr("y", 15)
+        .attr("fill", "red")
+        .style("font-size", "12px")
+        .text(`Mean: ${meanValue.toFixed(2)}`);
+
+    // Median line
+    svgHist.append("line")
+        .attr("x1", xHist(medianValue))
+        .attr("y1", 0)
+        .attr("x2", xHist(medianValue))
+        .attr("y2", height)
+        .attr("stroke", "purple")
+        .attr("stroke-dasharray", "4")
+        .attr("stroke-width", 2);
+
+    svgHist.append("text")
+        .attr("x", xHist(medianValue) + 5)
+        .attr("y", 35)
+        .attr("fill", "purple")
+        .style("font-size", "12px")
+        .text(`Median: ${medianValue.toFixed(2)}`);
+
+    // --- Interactive Quantiles ---
+    const initialQuantiles = [0.25, 0.50, 0.75]; // 25th, 50th, 75th percentiles
+    const quantileColors = ["green", "orange", "brown"];
+
+    const quantileGroup = svgCDF.append("g").attr("class", "quantile-group");
+    const histQuantileGroup = svgHist.append("g").attr("class", "hist-quantile-group");
+
+    initialQuantiles.forEach((p, i) => {
+        const qValue = d3.quantile(data, p);
+
+        // CDF marker
+        const cdfMarker = quantileGroup.append("circle")
+            .attr("cx", xCDF(qValue))
+            .attr("cy", yCDF(p))
+            .attr("r", 6)
+            .attr("fill", quantileColors[i])
+            .attr("stroke", "black")
+            .attr("cursor", "grab")
+            .datum({ probability: p, value: qValue, index: i }); // Store initial data
+
+        // CDF horizontal line
+        const cdfHLine = quantileGroup.append("line")
+            .attr("x1", 0)
+            .attr("y1", yCDF(p))
+            .attr("x2", xCDF(qValue))
+            .attr("y2", yCDF(p))
+            .attr("stroke", quantileColors[i])
+            .attr("stroke-dasharray", "2,2")
+            .attr("stroke-width", 1);
+
+        // CDF vertical line
+        const cdfVLine = quantileGroup.append("line")
+            .attr("x1", xCDF(qValue))
+            .attr("y1", yCDF(p))
+            .attr("x2", xCDF(qValue))
+            .attr("y2", height)
+            .attr("stroke", quantileColors[i])
+            .attr("stroke-dasharray", "2,2")
+            .attr("stroke-width", 1);
+
+        // Histogram vertical line
+        const histVLine = histQuantileGroup.append("line")
+            .attr("class", `quantile-line-${i}`)
+            .attr("x1", xHist(qValue))
+            .attr("y1", 0)
+            .attr("x2", xHist(qValue))
+            .attr("y2", height)
+            .attr("stroke", quantileColors[i])
+            .attr("stroke-dasharray", "4")
+            .attr("stroke-width", 2);
+
+        // Histogram text label
+        const histText = histQuantileGroup.append("text")
+            .attr("class", `quantile-text-${i}`)
+            .attr("x", xHist(qValue) + 5)
+            .attr("y", 55 + (i * 20)) // Offset for multiple labels
+            .attr("fill", quantileColors[i])
+            .style("font-size", "12px")
+            .text(`${(p * 100).toFixed(0)}th Percentile: ${qValue.toFixed(2)}`);
+
+        cdfMarker.call(d3.drag()
+            .on("start", dragstarted)
+            .on("drag", dragged)
+            .on("end", dragended));
+
+        function dragstarted(event, d) {
+            d3.select(this).attr("cursor", "grabbing");
+        }
+
+        function dragged(event, d) {
+            // Constrain y position to CDF height
+            const newY = Math.max(0, Math.min(height, event.y));
+            d3.select(this).attr("cy", newY);
+
+            // Convert y position (pixel) to probability
+            const newProbability = yCDF.invert(newY);
+            d.probability = newProbability;
+
+            // Find the corresponding value (quantile) from the CDF data
+            let newQValue = xCDF.domain()[0]; // Default to min value
+            for (let k = 0; k < cdfData.length - 1; k++) {
+                if (cdfData[k].probability <= newProbability && cdfData[k+1].probability > newProbability) {
+                    // Linear interpolation between two points
+                    const p0 = cdfData[k].probability;
+                    const v0 = cdfData[k].value;
+                    const p1 = cdfData[k+1].probability;
+                    const v1 = cdfData[k+1].value;
+
+                    if (p1 - p0 > 0) {
+                        newQValue = v0 + (newProbability - p0) * (v1 - v0) / (p1 - p0);
+                    } else {
+                        newQValue = v0; // Handle flat segments
+                    }
+                    break;
+                }
+            }
+            // Handle cases where newProbability is outside the range of cdfData
+            if (newProbability <= cdfData[0].probability) {
+                newQValue = cdfData[0].value;
+            } else if (newProbability >= cdfData[cdfData.length - 1].probability) {
+                newQValue = cdfData[cdfData.length - 1].value;
+            }
+
+            d.value = newQValue;
+
+            // Update CDF lines
+            cdfHLine
+                .attr("x2", xCDF(newQValue))
+                .attr("y1", newY)
+                .attr("y2", newY);
+
+            cdfVLine
+                .attr("x1", xCDF(newQValue))
+                .attr("x2", xCDF(newQValue))
+                .attr("y1", newY);
+
+            // Update histogram line and text
+            histVLine
+                .attr("x1", xHist(newQValue))
+                .attr("x2", xHist(newQValue));
+
+            histText
+                .attr("x", xHist(newQValue) + 5)
+                .text(`${(newProbability * 100).toFixed(0)}th Percentile: ${newQValue.toFixed(2)}`);
+        }
+
+        function dragended(event, d) {
+            d3.select(this).attr("cursor", "grab");
+        }
+    });
+
+</script>
+</div>
+
+<p>As you can see, the visual helps to drive home the point: quantiles give us specific points that tell us about the accumulation of data at various levels of the distribution. It's not just about the middle, but about the whole story of the numbers.</p>
+
+<h3>A Quick Video to See It in Practice</h3>
+
+<p>To further solidify your understanding, here's a short video demonstrating how quantiles are calculated and what they represent in a simple dataset. Watching this in action can make the concept much more concrete.</p>
+
+{INSERT_VIDEO_HERE}
+
+<h3>Beyond the Average: The Power of Quantiles</h3>
+
+<p>So, while the mean is a good starting point, quantiles offer a far richer and more detailed picture of your data's distribution. They are especially useful when the relationship between variables isn't uniform across the entire range of values, or when outliers might distort your understanding.</p>
+
+<p>This foundational understanding of quantiles is absolutely crucial because it sets the stage for a powerful statistical technique called <b>quantile regression</b>. Instead of just modeling the average outcome, quantile regression allows us to model how different parts of the distribution (like the 10th percentile, median, or 90th percentile) are affected by other variables. This means we can uncover relationships that the mean-focused models might completely miss. Our data indicates that "Quantile regression is advantageous when conditional quantile functions are of interest."</p>
+
+<p>In the next chapter, we'll dive into how this powerful idea of dividing data translates into a robust regression technique, opening up a whole new world of insights!</p>
+          <figure>
+              <video width="100%" controls>
+                  <source src="videos/video_chapter_1.mp4" type="video/mp4">
+                  Your browser does not support the video tag.
+              </video>
+              <figcaption>Video resource for What's a Quantile, Anyway? A Deep Dive into Distribution</figcaption>
+          </figure>
+          </section>
+<section id='chapter-2'><h2>Quantile Regression in Action: Unlocking the Full Story</h2><h3>Unlocking the Full Story: Why Averages Aren't Enough</h3>
+
+<p>In our journey to understand the world through data, we often rely on statistical models to find relationships. Most commonly, we start with methods like Ordinary Least Squares (OLS) regression. OLS is fantastic for telling us about the <i>average</i> relationship between variables. It draws a single line through our data, aiming to predict the expected outcome for an average individual. But what if the "average" isn't the whole story?</p>
+<p>Imagine you're trying to predict how much a plant will grow based on the amount of sunlight it receives. OLS would give you a line showing the average growth for a given amount of sunlight. But plants aren't all average! Some are naturally robust and thrive even with less-than-ideal conditions, while others are delicate and struggle unless conditions are perfect. The average line might completely miss these nuances.</p>
+
+<p>This is where <b>quantile regression</b> steps onto the stage, offering us a much richer, more detailed narrative. Instead of just focusing on the average, quantile regression lets us explore how variables relate to each other at different points across the entire spectrum of outcomes.</p>
+<p>Think of it like this: Instead of drawing just one 'average' line to predict plant growth, quantile regression can draw <i>multiple</i> lines. It can draw a line for the plants that grow very little (say, the $10^{th}$ percentile of growth), another for the average growers (the $50^{th}$ percentile, which is the median), and yet another for the plants that grow exceptionally well (the $90^{th}$ percentile).</p>
+<p>Each of these lines tells us how sunlight affects growth for a different "type" of plant – the struggling ones, the average ones, and the thriving ones. It's like having multiple lenses to view your data, each revealing a different facet of the relationship.</p>
+
+<h3>Practical Advantages & Applications: Seeing What OLS Misses</h3>
+<p>So, why would we want to look beyond the average? Quantile regression offers several compelling advantages:</p>
+<ul>
+    <li><b>Robustness to Outliers:</b> Traditional methods can be very sensitive to extreme data points (outliers). If a few plants in our study grew unusually large or small for their sunlight, an OLS model's average line could be significantly skewed. Quantile regression estimates are more robust against outliers in the response measurements, meaning those extreme cases won't hijack our entire understanding.</li>
+    <li><b>A More Comprehensive Story:</b> The main attraction of quantile regression is advantageous when conditional quantile functions are of interest. It allows for a more comprehensive analysis of the relationship between variables using different measures of central tendency (like the median) and statistical dispersion. This means we don't just know if sunlight generally helps plants grow; we know <i>how much</i> it helps the slow growers versus the fast growers.</li>
+    <li><b>Revealing Hidden Relationships (Ecology Example):</b> Sometimes, the average relationship between two variables is weak or non-existent, but strong relationships exist at the extremes. In ecology, for example, researchers might use it to discover more useful predictive relationships between variables, especially when there's no or a weak relationship between the means, often due to complex interactions leading to unequal variation. For instance, the average fish size in a polluted river might not show a clear link to pollution levels, but quantile regression could reveal that pollution severely stunts the growth of the <i>smallest</i> fish (lower quantiles), while having less impact on the largest, more resilient ones (upper quantiles).</li>
+    <li><b>Real-world Benchmarks (Growth Charts):</b> A perfect, everyday example is in growth charts for children. Doctors don't just look at whether a child's height or weight is 'average' for their age; they use percentile curves (e.g., the $10^{th}$, $50^{th}$, $90^{th}$ percentile) to screen for abnormal growth. Quantile regression helps us model these very curves, showing how factors like nutrition or genetics might influence growth differently across these percentiles.</li>
+</ul>
+
+<h3>Interpreting the Results: The Story Behind the Slopes</h3>
+<p>Let's consider our plant growth example again. Suppose we model plant growth (dependent variable) based on sunlight exposure (explanatory variable) using quantile regression for the $10^{th}$, $50^{th}$, and $90^{th}$ quantiles.</p>
+<p>If we get the following hypothetical results:</p>
+<ul>
+    <li>For the $10^{th}$ percentile (slowest growing plants), the coefficient for sunlight is, say, $0.5$ cm/day per hour of sunlight.</li>
+    <li>For the $50^{th}$ percentile (average growing plants), the coefficient for sunlight is $0.3$ cm/day per hour of sunlight.</li>
+    <li>For the $90^{th}$ percentile (fastest growing plants), the coefficient for sunlight is $0.1$ cm/day per hour of sunlight.</li>
+</ul>
+<p>What does this tell us? It means that for the plants that are struggling to grow (at the $10^{th}$ percentile), every extra hour of sunlight has a <i>much larger positive impact</i> on their growth ($0.5$ cm/day) compared to the average plants ($0.3$ cm/day), and an even larger impact compared to the already thriving plants ($0.1$ cm/day). In simpler terms, sunlight is a critical boost for struggling plants, while its marginal benefit diminishes for plants that are already growing very well.</p>
+
+<p>This kind of insight is invaluable for targeted interventions. If you want to improve overall plant health, you might focus on ensuring struggling plants get adequate sunlight, as they have the most to gain. An OLS model, providing only an average effect, would have missed this crucial detail.</p>
+
+<p>To visualize this, imagine plotting these three lines on a scatter plot of plant growth versus sunlight. You'd see three distinct lines, potentially with different slopes, illustrating how the relationship changes across the distribution of plant growth. This interactive visualization demonstrates exactly that:</p>
+
+<div class='vis-wrapper'>
+<div id="vis_chapter_2">
+  <style>
+    #vis_chapter_2 {
+      font-family: 'Arial', sans-serif;
+      max-width: 900px;
+      margin: auto;
+      padding: 20px;
+      border: 1px solid #eee;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      background-color: #fff;
+      line-height: 1.6;
+      color: #333;
+    }
+    #interactive-plot, #conceptual-applications {
+      margin-bottom: 40px;
+    }
+    #plot-controls {
+      margin-bottom: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 15px;
+      justify-content: center;
+    }
+    #plot-controls label {
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+    }
+    #plot-controls input[type="checkbox"] {
+      margin-right: 5px;
+      cursor: pointer;
+    }
+    .regression-line {
+      fill: none;
+    }
+    .dot {
+      opacity: 0.7;
+    }
+    .legend {
+      font-size: 12px;
+    }
+    .legend text {
+      fill: #333;
+    }
+    h2, h3 {
+      color: #2c3e50;
+      text-align: center;
+      margin-bottom: 25px;
+    }
+    ul {
+      list-style-type: disc;
+      padding-left: 25px;
+    }
+    li {
+      margin-bottom: 12px;
+    }
+    li strong {
+      color: #34495e;
+    }
+    #quantile-regression-svg {
+      display: block;
+      margin: auto;
+      border: 1px solid #ddd;
+      background-color: #f9f9f9;
+    }
+  </style>
+
+  <h2>Quantile Regression: A Comprehensive View Beyond the Mean</h2>
+
+  <div id="interactive-plot">
+    <h3>Interactive Quantile Regression Plot</h3>
+    <p style="text-align: center; font-style: italic; margin-bottom: 20px;">
+      Explore how the relationship between X and Y changes across different quantiles, especially in the presence of varying data spread (heteroscedasticity).
+    </p>
+    <div id="plot-controls">
+      <label><input type="checkbox" class="quantile-toggle" data-quantile="0.1" checked> 10th Quantile</label>
+      <label><input type="checkbox" class="quantile-toggle" data-quantile="0.25" checked> 25th Quantile</label>
+      <label><input type="checkbox" class="quantile-toggle" data-quantile="0.5" checked> 50th Quantile (Median)</label>
+      <label><input type="checkbox" class="quantile-toggle" data-quantile="0.75" checked> 75th Quantile</label>
+      <label><input type="checkbox" class="quantile-toggle" data-quantile="0.9" checked> 90th Quantile</label>
+      <label><input type="checkbox" id="ols-toggle" checked> OLS Regression (Mean)</label>
+    </div>
+    <svg id="quantile-regression-svg"></svg>
+  </div>
+
+  <div id="conceptual-applications">
+    <h3>Real-World Applications of Quantile Regression</h3>
+    <p>Quantile regression provides deeper insights in scenarios where the effect of an independent variable varies across the conditional distribution of the dependent variable. It's particularly powerful when traditional mean-based methods (like OLS) might miss crucial details.</p>
+    <ul>
+      <li><strong>Medicine: Drug Dosage & Patient Response:</strong>
+        Quantile regression can reveal how a drug dosage affects not just the average patient, but also the 10% least responsive and 10% most responsive patients. This helps in understanding the full spectrum of treatment effects and tailoring dosages.</li>
+      <li><strong>Economics: Education & Income:</strong>
+        The impact of education on income might differ significantly for low-income earners versus high-income earners. Quantile regression can show how education affects different income quantiles, highlighting disparities or varying returns on investment.</li>
+      <li><strong>Ecology: Environmental Factors & Species Abundance:</strong>
+        In ecological studies, environmental factors might limit species abundance at the lower quantiles (e.g., minimum temperature for survival), while having less impact on the upper quantiles (e.g., maximum potential growth). This helps identify limiting factors.</li>
+      <li><strong>Growth Charts:</strong>
+        Pediatric growth charts commonly use percentile curves (quantiles) to track a child's growth relative to a population. Quantile regression can model these curves directly, identifying abnormal growth patterns more precisely than a single average growth curve.</li>
+    </ul>
+  </div>
+
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+  // Generate synthetic data with heteroscedasticity
+  const numPoints = 200;
+  const data = [];
+  for (let i = 0; i < numPoints; i++) {
+    const x = Math.random() * 10;
+    const base_y = 2 * x + 5; // Base linear relationship
+    const noise_amplitude = 0.5 + x * 0.8; // Noise increases with x
+    const y = base_y + (Math.random() - 0.5) * noise_amplitude * 5;
+    data.push({ x, y });
+  }
+
+  // Simple linear regression (OLS)
+  function calculateOLS(data) {
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    const n = data.length;
+
+    data.forEach(d => {
+      sumX += d.x;
+      sumY += d.y;
+      sumXY += d.x * d.y;
+      sumXX += d.x * d.x;
+    });
+
+    const meanX = sumX / n;
+    const meanY = sumY / n;
+
+    const numerator = sumXY - n * meanX * meanY;
+    const denominator = sumXX - n * meanX * meanX;
+
+    const slope = numerator / denominator;
+    const intercept = meanY - slope * meanX;
+
+    return { slope, intercept };
+  }
+
+  const ols_line = calculateOLS(data);
+
+  // Function to calculate a "simulated" quantile regression line
+  // This is a simplification for visualization purposes, not a true quantile regression algorithm.
+  // It aims to visually represent the fanning effect often seen in quantile regression with heteroscedastic data.
+  function calculateSimulatedQuantileLine(data, quantile) {
+    const { slope: baseSlope, intercept: baseIntercept } = calculateOLS(data);
+
+    let interceptAdjustment = 0;
+    let slopeAdjustment = 0;
+
+    // Adjustments to simulate quantile lines diverging with heteroscedasticity
+    // These values are chosen to create a visually illustrative fanning effect.
+    if (quantile < 0.5) {
+      interceptAdjustment = (quantile - 0.5) * 10; // Shift lower quantiles down
+      slopeAdjustment = (quantile - 0.5) * -0.5; // Make lower quantile slopes slightly flatter
+    } else if (quantile > 0.5) {
+      interceptAdjustment = (quantile - 0.5) * 10; // Shift higher quantiles up
+      slopeAdjustment = (quantile - 0.5) * 0.5; // Make higher quantile slopes slightly steeper
+    }
+
+    const slope = baseSlope + slopeAdjustment;
+    const intercept = baseIntercept + interceptAdjustment;
+
+    return { slope, intercept };
+  }
+
+  const quantiles = [0.1, 0.25, 0.5, 0.75, 0.9];
+  const quantile_lines = quantiles.map(q => ({
+    quantile: q,
+    line: calculateSimulatedQuantileLine(data, q)
+  }));
+
+  // D3.js Visualization Setup
+  const margin = { top: 20, right: 180, bottom: 40, left: 50 }; // Increased right margin for legend
+  const width = 800 - margin.left - margin.right;
+  const height = 500 - margin.top - margin.bottom;
+
+  const svg = d3.select("#quantile-regression-svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // Scales
+  const xScale = d3.scaleLinear()
+    .domain(d3.extent(data, d => d.x)).nice()
+    .range([0, width]);
+
+  const yScale = d3.scaleLinear()
+    .domain(d3.extent(data, d => d.y)).nice()
+    .range([height, 0]);
+
+  // Axes
+  svg.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(xScale))
+    .append("text")
+    .attr("x", width / 2)
+    .attr("y", 35)
+    .attr("fill", "black")
+    .attr("text-anchor", "middle")
+    .text("Independent Variable (X)");
+
+  svg.append("g")
+    .call(d3.axisLeft(yScale))
+    .append("text")
+    .attr("transform", "rotate(-90)")
+    .attr("y", -margin.left + 15)
+    .attr("x", -height / 2)
+    .attr("fill", "black")
+    .attr("text-anchor", "middle")
+    .text("Dependent Variable (Y)");
+
+  // Scatter points
+  svg.selectAll(".dot")
+    .data(data)
+    .enter().append("circle")
+    .attr("class", "dot")
+    .attr("cx", d => xScale(d.x))
+    .attr("cy", d => yScale(d.y))
+    .attr("r", 3)
+    .style("fill", "#4682b4"); // Steelblue color
+
+  // OLS Line
+  svg.append("line")
+    .attr("class", "ols-line regression-line")
+    .attr("x1", xScale(d3.min(data, d => d.x)))
+    .attr("y1", yScale(ols_line.intercept + ols_line.slope * d3.min(data, d => d.x)))
+    .attr("x2", xScale(d3.max(data, d => d.x)))
+    .attr("y2", yScale(ols_line.intercept + ols_line.slope * d3.max(data, d => d.x)))
+    .attr("stroke", "#d62728") // Red color
+    .attr("stroke-width", 2)
+    .attr("stroke-dasharray", "5,5"); // Dashed for OLS
+
+  // Quantile Lines
+  const lineColors = d3.scaleOrdinal(d3.schemeCategory10); // For different quantile lines
+
+  quantile_lines.forEach((qLine, i) => {
+    svg.append("line")
+      .attr("class", `quantile-line quantile-${qLine.quantile.toString().replace('.', '')} regression-line`)
+      .attr("x1", xScale(d3.min(data, d => d.x)))
+      .attr("y1", yScale(qLine.line.intercept + qLine.line.slope * d3.min(data, d => d.x)))
+      .attr("x2", xScale(d3.max(data, d => d.x)))
+      .attr("y2", yScale(qLine.line.intercept + qLine.line.slope * d3.max(data, d => d.x)))
+      .attr("stroke", lineColors(i))
+      .attr("stroke-width", 2)
+      .style("opacity", 1); // Initially visible
+  });
+
+  // Legend for lines
+  const legend = svg.append("g")
+    .attr("class", "legend")
+    .attr("transform", `translate(${width + 30}, 20)`); // Positioned to the right
+
+  legend.append("line")
+    .attr("x1", 0)
+    .attr("y1", 0)
+    .attr("x2", 20)
+    .attr("y2", 0)
+    .attr("stroke", "#d62728")
+    .attr("stroke-width", 2)
+    .attr("stroke-dasharray", "5,5");
+  legend.append("text")
+    .attr("x", 25)
+    .attr("y", 3)
+    .text("OLS Regression (Mean)")
+    .style("font-size", "12px");
+
+  quantile_lines.forEach((qLine, i) => {
+    legend.append("line")
+      .attr("x1", 0)
+      .attr("y1", 20 + i * 20)
+      .attr("x2", 20)
+      .attr("y2", 20 + i * 20)
+      .attr("stroke", lineColors(i))
+      .attr("stroke-width", 2);
+    legend.append("text")
+      .attr("x", 25)
+      .attr("y", 23 + i * 20)
+      .text(`${qLine.quantile * 100}th Quantile`)
+      .style("font-size", "12px");
+  });
+
+  // Toggle functionality
+  d3.selectAll(".quantile-toggle").on("change", function() {
+    const quantile = d3.select(this).attr("data-quantile");
+    const isChecked = d3.select(this).property("checked");
+    svg.selectAll(`.quantile-${quantile.replace('.', '')}`)
+      .transition()
+      .duration(200)
+      .style("opacity", isChecked ? 1 : 0);
+  });
+
+  d3.select("#ols-toggle").on("change", function() {
+    const isChecked = d3.select(this).property("checked");
+    svg.select(".ols-line")
+      .transition()
+      .duration(200)
+      .style("opacity", isChecked ? 1 : 0);
+  });
+</script>
+</div>
+
+<p>As you can see, the lines aren't parallel, indicating that the effect of the explanatory variable isn't uniform across the dependent variable's distribution. This non-uniformity is the key insight quantile regression provides.</p>
+
+<p>Here's a quick video demonstration of how to interpret such plots and what each quantile line represents in a practical context:</p>
+{INSERT_VIDEO_HERE}
+
+<p>By stepping away from the singular focus on the mean, quantile regression empowers us to uncover the full, intricate story hidden within our data, revealing relationships that truly matter for specific segments of a population or specific outcomes.</p>
+          <figure>
+              <video width="100%" controls>
+                  <source src="videos/video_chapter_2.mp4" type="video/mp4">
+                  Your browser does not support the video tag.
+              </video>
+              <figcaption>Video resource for Quantile Regression in Action: Unlocking the Full Story</figcaption>
+          </figure>
+          </section>
+            
+            <hr style="margin: 4rem 0; border: 0; border-top: 1px solid #eee;">
+            
+            <div style="font-family: var(--font-sans); font-size: 0.8rem; color: #999; text-align: center;">
+                End of Article
+            </div>
+        </article>
+
+    </body>
+    </html>
+    
