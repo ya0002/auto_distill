@@ -2,6 +2,12 @@
 
 Auto Distill is an AI-powered agentic pipeline designed to generate high-quality, "Distill-style" interactive articles. Whether starting from a simple user query or an uploaded PDF, Auto Distill orchestrates a team of AI agents to research, plan, write, and visualize complex scientific and technical concepts.
 
+[DEMO VIDEO](https://youtu.be/j7Va_BvqJSA?si=psUXyB5kExpwSsaH)
+
+[LIVE DEMO](https://huggingface.co/spaces/MCP-1st-Birthday/auto-distill)
+
+![Demo GIF](auto_distill.gif)
+
 ## Features
 
 - **Agentic Workflow**: Powered by [LangGraph](https://langchain-ai.github.io/langgraph/), the system employs specialized agents:
